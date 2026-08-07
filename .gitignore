@@ -2,3 +2,4 @@ civitai-developer-docs
 mytoken.py
 *.pyc
 __pycache__
+dist
