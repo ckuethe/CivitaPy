@@ -1,6 +1,7 @@
 # CivitaPy — Python bindings for the CivitAI Site API
 
-A play on **Civitai**, **API**, and **py**.
+Brought to you by opencode, lemonade, and Qwen3.6-35B-A3B, and a couple
+of careful prompts.
 
 ## Install
 
