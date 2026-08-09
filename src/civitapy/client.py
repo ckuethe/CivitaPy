@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os as _os_mod
+import re
 from typing import Any, AsyncIterator, TypeVar
 
 import httpx
@@ -43,6 +44,9 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 _BASE_URL = "https://civitai.com/api/v1"
+# Runs of characters that are unsafe for a path component are replaced with a
+# single underscore (see CivitAIClient._sanitize_component).
+_INVALID_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class _LoopGuard:
@@ -164,7 +168,14 @@ class CivitAIClient:
         user = client.users_me()
     """
 
-    def __init__(self, *, token: str | None = None, base_url: str = _BASE_URL, timeout: float = 30.0):
+    def __init__(
+        self,
+        *,
+        token: str | None = None,
+        base_url: str = _BASE_URL,
+        timeout: float = 30.0,
+        download_dir: str = ".",
+    ):
         """Create a CivitAI API client.
 
         Args:
@@ -173,11 +184,15 @@ class CivitAIClient:
                 endpoints (``/me``, vault, favorites/hidden filters, gated files).
             base_url: Base URL for the Site API. Defaults to the official endpoint.
             timeout: Request timeout in seconds.
+            download_dir: Default top-level directory that downloads are rooted
+                under (defaulting to the current directory). Model files are placed at
+                ``download_dir/<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``.
         """
         self._base_url = base_url.rstrip("/")
         # Prefer explicit token arg → fall back to CIVITAI_TOKEN env var
         self._token = token or _os_mod.environ.get("CIVITAI_TOKEN")
         self._timeout = httpx.Timeout(timeout)
+        self._download_dir = _os_mod.path.abspath(download_dir)
 
     @property
     def auth_header(self) -> dict[str, str] | None:
@@ -550,31 +565,43 @@ class CivitAIClient:
     def download_model_version(
         self,
         version_id: int,
-        destination_dir: str,
         *,
         filename: str | None = None,
         base_model: str | None = None,
+        progress: bool = False,
     ) -> list[str]:
         """Download every file of a single model version (sync wrapper for
         :meth:`download_model_version_async`).
 
+        Files are placed under the client's ``download_dir`` at
+        ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``.
+
         See :meth:`download_model_version_async` for the full parameter documentation.
         """
-        return self._run(self.download_model_version_async(version_id, destination_dir, filename=filename, base_model=base_model))
+        return self._run(
+            self.download_model_version_async(
+                version_id, filename=filename, base_model=base_model, progress=progress
+            )
+        )
 
     def download_model(
         self,
         model_id: int,
-        destination_dir: str,
         *,
         base_model: str | None = None,
+        progress: bool = False,
     ) -> list[str]:
         """Download all files of every version of a model (sync wrapper for
         :meth:`download_model_async`).
 
+        Files are placed under the client's ``download_dir`` at
+        ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``.
+
         See :meth:`download_model_async` for the full parameter documentation.
         """
-        return self._run(self.download_model_async(model_id, destination_dir, base_model=base_model))
+        return self._run(
+            self.download_model_async(model_id, base_model=base_model, progress=progress)
+        )
 
     # -----------------------------------------------------------------------
     # Core HTTP (async + sync wrappers delegate to these via _request)
@@ -1185,27 +1212,29 @@ class CivitAIClient:
     async def download_model_version_async(
         self,
         version_id: int,
-        destination_dir: str,
         *,
         filename: str | None = None,
         base_model: str | None = None,
+        progress: bool = False,
     ) -> list[str]:
         """Download every file of a single model version.
 
-        Files are written to ``destination_dir`` using their API names by default.
-        When ``filename`` is given, it is used for the primary file (or the only
-        file when there is just one); any remaining files keep their API names.
-        Interrupted downloads are stored as ``<name>.part`` and resumed on a later
-        call. Each file's size is verified against the API's ``sizeKB``; once the
-        downloaded size is at least ``int(sizeKB * 1024)`` its SHA256 is also
-        checked against the API's ``SHA256`` hash.
+        Files are written under the client's default download directory at
+        ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/`` using
+        their API names by default. When ``filename`` is given, it is used for the
+        primary file (or the only file when there is just one); any remaining
+        files keep their API names. Interrupted downloads are stored as
+        ``<name>.part`` and resumed on a later call. Each file's size is verified
+        against the API's ``sizeKB``; once the downloaded size is at least
+        ``int(sizeKB * 1024)`` its SHA256 is also checked against the API's
+        ``SHA256`` hash.
 
         Args:
             version_id: The model version ID to download.
-            destination_dir: Directory to write files into (created if missing).
             filename: Optional custom filename for the primary file.
             base_model: If given and it doesn't match the version's base model,
                 nothing is downloaded and an empty list is returned.
+            progress: Show a tqdm progress bar per file when ``True``.
 
         Returns:
             A list of absolute paths to the successfully downloaded files.
@@ -1218,10 +1247,16 @@ class CivitAIClient:
         if base_model is not None and version.base_model != base_model:
             return []
 
+        # The version endpoint omits the parent's creator, so fetch the model to
+        # build the canonical download path.
+        model_data = await self.models_get_async(version.model_id)
+        model = Model(**model_data)
+        dest = self._version_download_dir(model, version.base_model)
+
         downloaded: list[str] = []
         for file in version.files:
             use_name = filename if (file.primary or len(version.files) == 1) else None
-            path = await self._download_file_async(file, destination_dir, filename=use_name)
+            path = await self._download_file_async(file, dest, filename=use_name, progress=progress)
             if path:
                 downloaded.append(path)
         return downloaded
@@ -1229,21 +1264,23 @@ class CivitAIClient:
     async def download_model_async(
         self,
         model_id: int,
-        destination_dir: str,
         *,
         base_model: str | None = None,
+        progress: bool = False,
     ) -> list[str]:
         """Download all files of every version of a model.
 
-        Fetches the model and downloads each version's files into
-        ``destination_dir``. When ``base_model`` is given, only versions whose
-        base model matches are downloaded. Files use their API names.
+        Fetches the model and downloads each version's files under the client's
+        default download directory at
+        ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``. When
+        ``base_model`` is given, only versions whose base model matches are
+        downloaded. Files use their API names.
 
         Args:
             model_id: The model ID to download.
-            destination_dir: Directory to write files into (created if missing).
             base_model: Optional base model to restrict downloads to
                 (e.g. ``SDXL 1.0``).
+            progress: Show a tqdm progress bar per file when ``True``.
 
         Returns:
             A list of absolute paths to the successfully downloaded files.
@@ -1257,14 +1294,50 @@ class CivitAIClient:
         for version in model.model_versions:
             if base_model is not None and version.base_model != base_model:
                 continue
+            dest = self._version_download_dir(model, version.base_model)
             for file in version.files:
-                path = await self._download_file_async(file, destination_dir)
+                path = await self._download_file_async(file, dest, progress=progress)
                 if path:
                     downloaded.append(path)
         return downloaded
 
+    @staticmethod
+    def _sanitize_component(value: str) -> str:
+        """Make a string safe for use as a single path component.
+
+        Only ``[A-Za-z0-9._-]`` is kept; every other character (and every run of
+        them) is collapsed to a single ``_``. Leading/trailing separators and dots
+        are stripped so components never start with a dot (hidden files) or end
+        awkwardly.
+        """
+        cleaned = _INVALID_COMPONENT_RE.sub("_", str(value))
+        return cleaned.strip("._-")
+
+    def _model_download_dir(self, model: Model) -> str:
+        """Root directory for a model: ``<modeltype>/<modelid>_<modelname>_<creatorname>``."""
+        creator = model.creator.username if (model.creator and model.creator.username) else ""
+        parts = [
+            str(model.id),
+            self._sanitize_component(model.name),
+        ]
+        if creator:
+            parts.append(self._sanitize_component(creator))
+        slug = "_".join(parts)
+        model_type = self._sanitize_component(model.type) or "unknown"
+        return _os_mod.path.join(self._download_dir, model_type, slug)
+
+    def _version_download_dir(self, model: Model, base_model: str) -> str:
+        """Directory for a single version's files: ``.../<basemodel>``."""
+        base = self._sanitize_component(base_model) or "unknown"
+        return _os_mod.path.join(self._model_download_dir(model), base)
+
     async def _download_file_async(
-        self, file: ModelVersionFile, destination_dir: str, *, filename: str | None = None
+        self,
+        file: ModelVersionFile,
+        destination_dir: str,
+        *,
+        filename: str | None = None,
+        progress: bool = False,
     ) -> str | None:
         """Download a single model file, resuming and verifying it.
 
@@ -1274,6 +1347,8 @@ class CivitAIClient:
         if the API provides a SHA256, verified. Returns the final absolute path on
         success, or ``None`` if the download is still incomplete (the ``.part`` is
         kept for a later resume).
+
+        When ``progress`` is ``True`` a tqdm progress bar is shown for the transfer.
         """
         target_name = filename or file.name
         final_path = _os_mod.path.join(destination_dir, target_name)
@@ -1312,6 +1387,13 @@ class CivitAIClient:
         if offset:
             headers["Range"] = f"bytes={offset}-"
 
+        bar = None
+        if progress:
+            try:
+                from tqdm import tqdm
+            except ImportError as exc:  # pragma: no cover
+                raise RuntimeError("progress=True requires the 'tqdm' package; install it first") from exc
+
         async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True, headers=headers) as session:
             async with session.stream("GET", url) as resp:
                 if resp.status_code == 206:
@@ -1324,10 +1406,25 @@ class CivitAIClient:
                 else:
                     raise CivitAIHTTPError(resp.status_code, f"Failed to download {target_name}")
 
-                with open(part_path, write_mode) as f:
-                    async for chunk in resp.aiter_bytes():
-                        f.write(chunk)
-                        hasher.update(chunk)
+                if progress:
+                    bar = tqdm(
+                        total=expected - offset,
+                        initial=0,
+                        unit="B",
+                        unit_scale=True,
+                        unit_divisor=1024,
+                        desc=target_name,
+                    )
+                try:
+                    with open(part_path, write_mode) as f:
+                        async for chunk in resp.aiter_bytes():
+                            f.write(chunk)
+                            hasher.update(chunk)
+                            if bar is not None:
+                                bar.update(len(chunk))
+                finally:
+                    if bar is not None:
+                        bar.close()
 
         downloaded = _os_mod.path.getsize(part_path)
         if downloaded < expected:
