@@ -55,6 +55,19 @@ class CivitAIHTTPError(CivitAIError):
         super().__init__(f"HTTP {status_code}: {message}" if message else f"HTTP {status_code}")
 
 
+class CivitAIDownloadError(CivitAIError):
+    """Raised when a downloaded file fails integrity verification.
+
+    Indicates a size mismatch or, when the downloaded size matches the server's
+    expected size, a SHA256 hash mismatch. The offending file is left in place so
+    it can be inspected.
+    """
+
+    def __init__(self, message: str, path: str | None = None):
+        self.path = path
+        super().__init__(message)
+
+
 def parse_error(response_data: dict | None) -> tuple[str, list[dict] | None]:
     """Parse an error response body into (message, issues)."""
     if not response_data:

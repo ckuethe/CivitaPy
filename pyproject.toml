@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "civitapy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python bindings for the CivitAI Site API"
 readme = "README.md"
 license = { text = "MIT" }

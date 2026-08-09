@@ -61,6 +61,7 @@ from civitapy.errors import (
     CivitAIBadRequestError,
     CivitAIForbiddenError,
     CivitAIServerError,
+    CivitAIDownloadError,
 )
 
 __all__ = [
@@ -127,4 +128,5 @@ __all__ = [
     "CivitAIBadRequestError",
     "CivitAIForbiddenError",
     "CivitAIServerError",
+    "CivitAIDownloadError",
 ]
