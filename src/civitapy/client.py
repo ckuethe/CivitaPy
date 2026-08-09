@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os as _os_mod
 import re
+import time
 from typing import Any, AsyncIterator, TypeVar
 
 import httpx
@@ -14,6 +15,7 @@ from civitapy.errors import (
     CivitAIAuthError,
     CivitAIBadRequestError,
     CivitAIError,
+    CivitAIForbiddenError,
     CivitAIHTTPError,
     CivitAINotFoundError,
     CivitAIRateLimitError,
@@ -86,6 +88,68 @@ class _LoopGuard:
 
 
 _loop_guard = _LoopGuard()
+
+
+class _RateLimiter:
+    """Best-effort internal rate limiter that honors the API's rate-limit headers.
+
+    Civitai does not publish a stable per-endpoint rate-limit contract, but some
+    endpoints send standard ``X-RateLimit-*`` headers and 429s may carry a
+    ``Retry-After`` header. This tracks those headers to space requests, backs off
+    when the remaining budget is exhausted, and always enforces a minimum interval
+    between requests.
+    """
+
+    def __init__(self, min_interval: float = 0.0):
+        self._min_interval = min_interval
+        self._last_request_ts = 0.0
+        self._remaining: int | None = None
+        self._reset_ts: float | None = None
+        self._lock = asyncio.Lock()
+
+    def observe(self, headers) -> None:
+        """Record rate-limit / retry-after headers from a response."""
+        get = headers.get
+        raw_remaining = get("X-RateLimit-Remaining") or get("x-ratelimit-remaining")
+        raw_reset = get("X-RateLimit-Reset") or get("x-ratelimit-reset")
+        raw_retry_after = get("Retry-After") or get("retry-after")
+        if raw_remaining is not None:
+            try:
+                self._remaining = int(raw_remaining)
+            except ValueError:
+                pass
+        if raw_reset is not None:
+            try:
+                self._reset_ts = float(raw_reset)
+            except ValueError:
+                pass
+        if raw_retry_after is not None:
+            try:
+                self._reset_ts = time.time() + float(raw_retry_after)
+            except ValueError:
+                pass
+
+    def _seconds_until_ok(self) -> float:
+        now = time.time()
+        if self._min_interval and self._last_request_ts:
+            wait = self._min_interval - (now - self._last_request_ts)
+            if wait > 0:
+                return wait
+        if self._reset_ts and now < self._reset_ts:
+            return self._reset_ts - now
+        if self._remaining is not None and self._remaining <= 0:
+            # Exhausted budget with no known reset; back off briefly.
+            return 1.0
+        return 0.0
+
+    async def wait_if_needed(self) -> None:
+        """Block until it is safe to send another request."""
+        async with self._lock:
+            delay = self._seconds_until_ok()
+            if delay > 0:
+                logger.debug("Rate limiter: sleeping %.1fs", delay)
+                await asyncio.sleep(delay)
+            self._last_request_ts = time.time()
 
 
 def _parse_enum_list(value: str | list[str] | None) -> str | None:
@@ -175,6 +239,9 @@ class CivitAIClient:
         base_url: str = _BASE_URL,
         timeout: float = 30.0,
         download_dir: str = ".",
+        retry_count: int = 3,
+        min_request_interval: float = 0.0,
+        base_models: list[str] | None = None,
     ):
         """Create a CivitAI API client.
 
@@ -187,12 +254,29 @@ class CivitAIClient:
             download_dir: Default top-level directory that downloads are rooted
                 under (defaulting to the current directory). Model files are placed at
                 ``download_dir/<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``.
+            retry_count: How many times a failed or interrupted request/download is
+                retried before giving up (default 3). Transient failures (429, 5xx,
+                network errors, incomplete transfers) are retried with exponential
+                backoff; permanent 4xx errors (401/403/404/400) are not.
+            min_request_interval: Minimum number of seconds to space between
+                requests, used to smooth API traffic. A best-effort internal rate
+                limiter also honors ``X-RateLimit-*`` and ``Retry-After`` headers
+                when the server provides them.
+            base_models: Optional global allow-list of base models to download.
+                Only versions whose base model matches one of these are downloaded
+                by the ``download_*`` methods (an empty/``None`` list downloads all).
+                Matching ignores case, punctuation and whitespace, so a config value
+                like ``"Z-Image-Turbo"`` matches Civitai's ``"ZImageTurbo"`` and
+                ``"Flux.2 Klein 4B"`` matches ``"Flux.2 Klein 4B"``.
         """
         self._base_url = base_url.rstrip("/")
         # Prefer explicit token arg → fall back to CIVITAI_TOKEN env var
         self._token = token or _os_mod.environ.get("CIVITAI_TOKEN")
         self._timeout = httpx.Timeout(timeout)
         self._download_dir = _os_mod.path.abspath(download_dir)
+        self._retry_count = max(1, int(retry_count))
+        self._rate_limiter = _RateLimiter(min_interval=min_request_interval)
+        self._base_model_filters = [f for f in (base_models or []) if f and f.strip()] or None
 
     @property
     def auth_header(self) -> dict[str, str] | None:
@@ -614,16 +698,19 @@ class CivitAIClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | list | None = None,
-        retry_count: int = 3,
+        retry_count: int | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
         headers = self.auth_header or {}
+        retries = self._retry_count if retry_count is None else retry_count
         last_exc = CivitAIError("No response received")
 
-        for attempt in range(1, retry_count + 1):
+        for attempt in range(1, retries + 1):
+            await self._rate_limiter.wait_if_needed()
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as session:
                     resp = await session.request(method, url, headers=headers, params=params, json=json)
+                self._rate_limiter.observe(resp.headers)
 
                 if resp.status_code == 204:
                     return {}
@@ -641,8 +728,6 @@ class CivitAIClient:
                     if code in ("UNAUTHORIZED",):
                         raise CivitAIAuthError(msg)
                     elif code == "FORBIDDEN":
-                        from civitapy.errors import CivitAIForbiddenError
-
                         raise CivitAIForbiddenError(msg)
                     else:
                         raise CivitAIBadRequestError(msg, issues)
@@ -668,15 +753,18 @@ class CivitAIClient:
                 return data or {}
 
             except (CivitAIRateLimitError, CivitAIServerError) as e:
-                if attempt == retry_count:
+                if attempt == retries:
                     raise
                 delay = min(2**attempt * 0.5, 30)
+                retry_after = getattr(e, "retry_after", None)
+                if retry_after:
+                    delay = max(delay, float(retry_after))
                 logger.warning("Request to %s failed (%s), retrying in %.1fs", path, type(e).__name__, delay)
                 await asyncio.sleep(delay)
 
             except httpx.HTTPError as e:
                 last_exc = CivitAIHTTPError(0, str(e))
-                if attempt == retry_count:
+                if attempt == retries:
                     raise
                 await asyncio.sleep(min(2**attempt * 0.5, 30))
 
@@ -1246,6 +1334,8 @@ class CivitAIClient:
         version = ModelVersion(**data)
         if base_model is not None and version.base_model != base_model:
             return []
+        if base_model is None and not self._should_download_base_model(version.base_model):
+            return []
 
         # The version endpoint omits the parent's creator, so fetch the model to
         # build the canonical download path.
@@ -1256,7 +1346,9 @@ class CivitAIClient:
         downloaded: list[str] = []
         for file in version.files:
             use_name = filename if (file.primary or len(version.files) == 1) else None
-            path = await self._download_file_async(file, dest, filename=use_name, progress=progress)
+            path = await self._download_file_async(
+                file, dest, filename=use_name, progress=progress, version=version
+            )
             if path:
                 downloaded.append(path)
         return downloaded
@@ -1293,6 +1385,8 @@ class CivitAIClient:
         downloaded: list[str] = []
         for version in model.model_versions:
             if base_model is not None and version.base_model != base_model:
+                continue
+            if base_model is None and not self._should_download_base_model(version.base_model):
                 continue
             dest = self._version_download_dir(model, version.base_model)
             for file in version.files:
@@ -1331,6 +1425,24 @@ class CivitAIClient:
         base = self._sanitize_component(base_model) or "unknown"
         return _os_mod.path.join(self._model_download_dir(model), base)
 
+    @staticmethod
+    def _normalize_base_model(value: str) -> str:
+        """Fold a base-model string for loose comparison (lowercase, no punctuation/space)."""
+        return re.sub(r"[^a-z0-9]", "", str(value).lower())
+
+    def _base_model_matches(self, actual: str, wanted: str) -> bool:
+        """True when an actual base model matches a wanted filter, ignoring case/punctuation."""
+        return self._normalize_base_model(actual) == self._normalize_base_model(wanted)
+
+    def _should_download_base_model(self, base_model: str) -> bool:
+        """True when a version's base model is allowed by the global base-model filter.
+
+        With no filter configured every base model is allowed.
+        """
+        if not self._base_model_filters:
+            return True
+        return any(self._base_model_matches(base_model, wanted) for wanted in self._base_model_filters)
+
     async def _download_file_async(
         self,
         file: ModelVersionFile,
@@ -1338,15 +1450,25 @@ class CivitAIClient:
         *,
         filename: str | None = None,
         progress: bool = False,
+        retry_count: int | None = None,
+        version: ModelVersion | None = None,
     ) -> str | None:
-        """Download a single model file, resuming and verifying it.
+        """Download a single model file, resuming, retrying and verifying it.
 
-        Downloads to ``<name>.part`` in ``destination_dir``, resuming from the
+        Downloads to ``<name>.part`` in ``destination_dir``, resuming from an
         existing partial via an HTTP Range request when present. Once the download
         reaches ``int(sizeKB * 1024)`` bytes it is renamed to its final name and,
-        if the API provides a SHA256, verified. Returns the final absolute path on
-        success, or ``None`` if the download is still incomplete (the ``.part`` is
-        kept for a later resume).
+        if the API provides a SHA256, verified.
+
+        Transient failures (429, 5xx, network errors, or an interrupted transfer)
+        are retried up to ``retry_count`` times (defaulting to the client's
+        ``retry_count``) with exponential backoff. Permanent 4xx errors such as
+        ``401``/``403`` (missing token / gated early-access file) and ``404`` are
+        raised immediately.
+
+        Returns the final absolute path on success, or ``None`` if the download is
+        still incomplete after all retries (the ``.part`` is kept for a later
+        resume).
 
         When ``progress`` is ``True`` a tqdm progress bar is shown for the transfer.
         """
@@ -1364,21 +1486,92 @@ class CivitAIClient:
         _os_mod.makedirs(destination_dir, exist_ok=True)
 
         if _os_mod.path.exists(final_path):
-            if self._file_ok(final_path, expected, sha256):
+            problem = self._file_problem(final_path, expected, sha256)
+            if problem is None:
                 return final_path
             raise CivitAIDownloadError(
-                f"Existing file {final_path} does not match the expected size/SHA256", final_path
+                f"Existing file {final_path} failed verification: {problem}", final_path
             )
 
+        retries = self._retry_count if retry_count is None else retry_count
+
+        for attempt in range(1, retries + 1):
+            try:
+                result = await self._download_file_attempt(
+                    file,
+                    final_path,
+                    part_path,
+                    expected,
+                    sha256,
+                    url,
+                    progress=progress,
+                    version=version,
+                )
+                if result is not None:
+                    return result
+            except (CivitAIRateLimitError, CivitAIServerError, httpx.HTTPError, CivitAIDownloadError) as exc:
+                # Don't retry permanent client errors.
+                if isinstance(exc, CivitAIHTTPError) and exc.status_code < 500 and exc.status_code != 429:
+                    raise
+                if attempt == retries:
+                    raise
+                delay = min(2**attempt * 0.5, 30)
+                retry_after = getattr(exc, "retry_after", None)
+                if retry_after:
+                    delay = max(delay, float(retry_after))
+                logger.warning(
+                    "Download of %r failed (attempt %d/%d): %s; retrying in %.1fs",
+                    target_name,
+                    attempt,
+                    retries,
+                    type(exc).__name__,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            if attempt == retries:
+                logger.warning(
+                    "Download of %r still incomplete after %d attempts; left %s for resume",
+                    target_name,
+                    retries,
+                    part_path,
+                )
+                return None
+            await asyncio.sleep(min(2**attempt * 0.5, 30))
+
+        return None
+
+    async def _download_file_attempt(
+        self,
+        file: ModelVersionFile,
+        final_path: str,
+        part_path: str,
+        expected: int,
+        sha256: str | None,
+        url: str,
+        *,
+        progress: bool = False,
+        version: ModelVersion | None = None,
+    ) -> str | None:
+        """One attempt at downloading ``file``, resuming an existing partial.
+
+        Returns the final path on success or ``None`` if the transfer was
+        interrupted (the ``.part`` is left in place for a retry/resume). Raises a
+        typed CivitAI error on a permanent failure, or a retryable error on a
+        transient one.
+        """
+        target_name = file.name
         offset = 0
         hasher = hashlib.sha256()
         if _os_mod.path.exists(part_path):
             offset = _os_mod.path.getsize(part_path)
             if offset >= expected:
                 _os_mod.replace(part_path, final_path)
-                if self._file_ok(final_path, expected, sha256):
+                problem = self._file_problem(final_path, expected, sha256)
+                if problem is None:
                     return final_path
-                raise CivitAIDownloadError(f"Partial download {final_path} failed verification", final_path)
+                raise CivitAIDownloadError(f"Partial download {final_path} failed verification: {problem}", final_path)
             with open(part_path, "rb") as f:
                 while chunk := f.read(1024 * 1024):
                     hasher.update(chunk)
@@ -1394,8 +1587,10 @@ class CivitAIClient:
             except ImportError as exc:  # pragma: no cover
                 raise RuntimeError("progress=True requires the 'tqdm' package; install it first") from exc
 
+        await self._rate_limiter.wait_if_needed()
         async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True, headers=headers) as session:
             async with session.stream("GET", url) as resp:
+                self._rate_limiter.observe(resp.headers)
                 if resp.status_code == 206:
                     write_mode = "ab"
                 elif resp.status_code == 200:
@@ -1403,6 +1598,16 @@ class CivitAIClient:
                     write_mode = "wb"
                     offset = 0
                     hasher = hashlib.sha256()
+                elif resp.status_code == 429:
+                    raise CivitAIRateLimitError(
+                        f"Rate limited while downloading {target_name}", self._retry_after(resp.headers)
+                    )
+                elif resp.status_code in (401, 403):
+                    self._raise_download_auth_error(resp.status_code, target_name, version)
+                elif resp.status_code == 404:
+                    raise CivitAINotFoundError(f"File {target_name} not found on Civitai")
+                elif resp.status_code >= 500:
+                    raise CivitAIServerError(resp.status_code, f"Server error while downloading {target_name}")
                 else:
                     raise CivitAIHTTPError(resp.status_code, f"Failed to download {target_name}")
 
@@ -1438,10 +1643,52 @@ class CivitAIClient:
             return None
 
         if sha256 and self._sha256_hex(part_path) != sha256:
+            try:
+                _os_mod.remove(part_path)
+            except OSError:
+                pass
             raise CivitAIDownloadError(f"SHA256 mismatch for {part_path}", part_path)
 
         _os_mod.replace(part_path, final_path)
         return final_path
+
+    @staticmethod
+    def _retry_after(headers) -> float | None:
+        """Read the ``Retry-After`` header (in seconds) if present."""
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    def _raise_download_auth_error(self, status_code: int, target_name: str, version: ModelVersion | None) -> None:
+        """Raise a detailed 401/403 error for a download.
+
+        Per the Civitai API docs, model-file downloads require a bearer token (401
+        without one) and gated resources — early-access windows or private files —
+        return 403 for callers without access (e.g. no active membership).
+        """
+        detail = ""
+        if version is not None:
+            if version.early_access_ends_at or version.early_access_config:
+                ends = version.early_access_ends_at
+                when = f" (ends {ends})" if ends else ""
+                detail = (
+                    f" The file is in early access{when}; downloading it requires an "
+                    "active Civitai membership or purchasing early access."
+                )
+            elif version.availability == "Private":
+                detail = " The file is private and restricted to its owner."
+        if status_code == 401:
+            raise CivitAIAuthError(
+                f"Cannot download {target_name}: downloads require a valid API token "
+                f"(set CIVITAI_TOKEN).{detail}"
+            )
+        raise CivitAIForbiddenError(
+            f"Cannot download {target_name}: access is forbidden (403).{detail}"
+        )
 
     @staticmethod
     def _sha256_hex(path: str) -> str:
@@ -1456,8 +1703,25 @@ class CivitAIClient:
     def _file_ok(path: str, expected_size: int, sha256: str | None) -> bool:
         """True when a file meets the expected minimum size and, if a hash is
         given, its SHA256 matches."""
-        if _os_mod.path.getsize(path) < expected_size:
-            return False
+        return CivitAIClient._file_problem(path, expected_size, sha256) is None
+
+    @staticmethod
+    def _file_problem(path: str, expected_size: int, sha256: str | None) -> str | None:
+        """Describe why a file fails verification, or ``None`` if it's acceptable.
+
+        A file is considered complete once its size is **at least**
+        ``int(sizeKB * 1024)`` bytes — Civitai reports ``sizeKB`` as a float that
+        may be rounded up, so the download can legitimately be a few bytes larger.
+        Only then is a SHA256 check meaningful and performed. The returned string
+        distinguishes a size shortfall from a hash mismatch so callers get a clear
+        diagnostic.
+        """
+        size = _os_mod.path.getsize(path)
+        if size < expected_size:
+            return (
+                f"size mismatch (got {size} bytes, expected at least {expected_size} "
+                f"from int(sizeKB*1024))"
+            )
         if sha256 and CivitAIClient._sha256_hex(path) != sha256:
-            return False
-        return True
+            return "SHA256 hash mismatch"
+        return None

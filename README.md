@@ -52,3 +52,45 @@ client = CivitAIClient()
 for model in client.models_list_paginated(limit=100):  # async generator
     print(model.name)
 ```
+
+## Downloads
+
+Downloads resume interrupted transfers, retry transient failures (429 / 5xx /
+network errors) with exponential backoff, verify each file's size against
+`int(sizeKB * 1024)` and, once size is acceptable, its SHA256:
+
+```python
+client = CivitAIClient()
+paths = client.download_model_version(2514310)
+print(paths)  # absolute paths to the downloaded files
+```
+
+Retries are configurable in the initializer (default 3). A best-effort internal
+rate limiter also honors `X-RateLimit-*` / `Retry-After` headers and can space
+requests with a minimum interval:
+
+```python
+client = CivitAIClient(retry_count=5, min_request_interval=0.5)
+```
+
+### Base-model filter
+
+Configure a global allow-list of base models so downloads skip anything else.
+Matching ignores case, punctuation and whitespace, so Civitai's `ZImageTurbo`
+matches a config value `Z-Image-Turbo`:
+
+```python
+client = CivitAIClient(
+    base_models=["Flux.2 Klein 4B", "Z-Image-Turbo", "Anima"],
+)
+```
+
+With a filter set, `download_model` / `download_model_version` only fetch files
+whose version's base model matches one of the listed entries.
+
+### Gated / early-access files
+
+Per the Civitai API docs, file downloads require a bearer token (401 without
+one) and early-access or private resources return 403 for callers without an
+active membership. These raise detailed `CivitAIAuthError` / `CivitAIForbiddenError`
+messages instead of a generic HTTP error.

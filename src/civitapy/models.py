@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -11,6 +11,27 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 T = TypeVar("T")
+
+
+def _as_int(value: Any) -> Any:
+    """Coerce bool/int/float/numeric-string to ``int`` for tolerant parsing.
+
+    Civitai occasionally reports a count as a float (e.g. ``156742.0``) instead of
+    an int, which would otherwise raise a ``ValidationError``. If the value can't be
+    sensibly converted, it is passed through unchanged so pydantic reports the
+    original problem.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        try:
+            return int(float(s))
+        except ValueError:
+            return value
+    return value
 
 
 class PaginationMetadata(BaseModel):
@@ -47,6 +68,18 @@ class Stats(BaseModel):
     thumbs_down_count: int = Field(default=0, alias="thumbsDownCount")
     comment_count: int = Field(default=0, alias="commentCount")
     tipped_amount_count: int = Field(default=0, alias="tippedAmountCount")
+
+    @field_validator(
+        "download_count",
+        "thumbs_up_count",
+        "thumbs_down_count",
+        "comment_count",
+        "tipped_amount_count",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_count(cls, value: Any) -> Any:
+        return _as_int(value)
 
 
 class UserSummary(BaseModel):
@@ -103,6 +136,11 @@ class VersionStats(BaseModel):
 
     download_count: int = Field(alias="downloadCount")
     thumbs_up_count: int = Field(default=0, alias="thumbsUpCount")
+
+    @field_validator("download_count", "thumbs_up_count", mode="before")
+    @classmethod
+    def _coerce_count(cls, value: Any) -> Any:
+        return _as_int(value)
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +421,20 @@ class ArticleStats(BaseModel):
     heart_count: int = 0
     view_count: int = 0
     tipped_amount_count: int = Field(default=0, alias="tippedAmountCount")
+
+    @field_validator(
+        "favorite_count",
+        "collected_count",
+        "comment_count",
+        "like_count",
+        "heart_count",
+        "view_count",
+        "tipped_amount_count",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_count(cls, value: Any) -> Any:
+        return _as_int(value)
 
 
 class Article(BaseModel):
