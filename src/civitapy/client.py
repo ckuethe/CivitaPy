@@ -1670,24 +1670,28 @@ class CivitAIClient:
         without one) and gated resources — early-access windows or private files —
         return 403 for callers without access (e.g. no active membership).
         """
-        detail = ""
+        details = ""
         if version is not None:
             if version.early_access_ends_at or version.early_access_config:
                 ends = version.early_access_ends_at
                 when = f" (ends {ends})" if ends else ""
-                detail = (
-                    f" The file is in early access{when}; downloading it requires an "
+                details = (
+                    f"The file is in early access{when}; downloading it requires an "
                     "active Civitai membership or purchasing early access."
                 )
             elif version.availability == "Private":
-                detail = " The file is private and restricted to its owner."
+                details = "The file is private and restricted to its owner."
         if status_code == 401:
             raise CivitAIAuthError(
                 f"Cannot download {target_name}: downloads require a valid API token "
-                f"(set CIVITAI_TOKEN).{detail}"
+                f"(set CIVITAI_TOKEN).",
+                details or "If the model is gated by early access, an active membership is required.",
             )
         raise CivitAIForbiddenError(
-            f"Cannot download {target_name}: access is forbidden (403).{detail}"
+            f"Cannot download {target_name}: access is forbidden (403).",
+            details
+            or "This file is likely gated by an early-access window or restricted "
+            "to paying members; an active Civitai membership may be required.",
         )
 
     @staticmethod
@@ -1720,7 +1724,6 @@ class CivitAIClient:
         if size < expected_size:
             return (
                 f"size mismatch (got {size} bytes, expected at least {expected_size} "
-                f"from int(sizeKB*1024))"
             )
         if sha256 and CivitAIClient._sha256_hex(path) != sha256:
             return "SHA256 hash mismatch"

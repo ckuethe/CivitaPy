@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -16,11 +19,15 @@ T = TypeVar("T")
 def _as_int(value: Any) -> Any:
     """Coerce bool/int/float/numeric-string to ``int`` for tolerant parsing.
 
-    Civitai occasionally reports a count as a float (e.g. ``156742.0``) instead of
-    an int, which would otherwise raise a ``ValidationError``. If the value can't be
-    sensibly converted, it is passed through unchanged so pydantic reports the
-    original problem.
+    Civitai occasionally reports a count as a float (e.g. ``156742.0``) or ``null``
+    (``None``) instead of an int, which would otherwise raise a ``ValidationError``.
+    ``None`` becomes ``0`` (the field default); anything else is coerced to its
+    integer value. Values that can't be sensibly converted are treated as ``0`` and
+    a warning is logged — these stats are informational and not worth failing a
+    parse over.
     """
+    if value is None:
+        return 0
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, (int, float)):
@@ -30,8 +37,10 @@ def _as_int(value: Any) -> Any:
         try:
             return int(float(s))
         except ValueError:
-            return value
-    return value
+            logger.warning("Could not coerce stat value %r to an integer; defaulting to 0", value)
+            return 0
+    logger.warning("Could not coerce stat value %r to an integer; defaulting to 0", value)
+    return 0
 
 
 class PaginationMetadata(BaseModel):

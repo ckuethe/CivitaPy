@@ -3,10 +3,16 @@ class CivitAIError(Exception):
 
 
 class CivitAIAuthError(CivitAIError):
-    """Raised when authentication fails (401)."""
+    """Raised when authentication fails (401).
 
-    def __init__(self, message: str = "Unauthorized"):
-        super().__init__(message)
+    ``details`` carries additional human-readable context (e.g. why access is
+    required) and is appended to the message so ``str(exc)`` includes it.
+    """
+
+    def __init__(self, message: str = "Unauthorized", details: str | None = None):
+        self.details = details or ""
+        full = f"{message} {self.details}".strip() if self.details else message
+        super().__init__(full)
 
 
 class CivitAIRateLimitError(CivitAIError):
@@ -33,10 +39,17 @@ class CivitAIBadRequestError(CivitAIError):
 
 
 class CivitAIForbiddenError(CivitAIError):
-    """Raised on 403 Forbidden."""
+    """Raised on 403 Forbidden.
 
-    def __init__(self, message: str = "Forbidden"):
-        super().__init__(message)
+    ``details`` carries additional human-readable context (e.g. that a file is
+    gated by early access) and is appended to the message so ``str(exc)`` includes
+    it.
+    """
+
+    def __init__(self, message: str = "Forbidden", details: str | None = None):
+        self.details = details or ""
+        full = f"{message} {self.details}".strip() if self.details else message
+        super().__init__(full)
 
 
 class CivitAIServerError(CivitAIError):
