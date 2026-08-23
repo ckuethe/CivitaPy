@@ -53,7 +53,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra dev
 
       - name: Test (offline unit tests)
         run: uv run pytest -m "not network" --cov=civitapy --cov-report=term-missing
