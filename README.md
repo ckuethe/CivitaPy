@@ -1,7 +1,15 @@
 # CivitaPy — Python bindings for the CivitAI Site API
 
-Brought to you by opencode, lemonade, and Qwen3.6-35B-A3B, and a couple
-of careful prompts.
+This package provides a python interface to [civitai](https://developer.civitai.com/site/);
+a popular sharing platform for image generation models...
+[thenoise](https://github.com/lemonade-sdk/thenoise)
+made me do it.
+
+Brought to you by [opencode](https://github.com/anomalyco/opencode/),
+[lemonade](https://github.com/lemonade-sdk/lemonade/),
+[Qwen3.6-35B-A3B](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF),
+[Deepseek-V4-Flash-0731](https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF),
+and a bunch of careful prompts.
 
 ## Install
 
@@ -18,8 +26,8 @@ client = CivitAIClient()  # reads CIVITAI_TOKEN from env automatically
 
 # Public endpoints (no token needed)
 models = client.models_list(limit=5)
-mv = ModelVersion(**client.model_versions_get(2514310))
-print(mv.air)  # urn:air:sdxl:checkpoint:civitai:827184@2514310
+mv = ModelVersion(**client.model_versions_get(1331249))
+print(mv.air)  # 'urn:air:sdxl:lora:civitai:1182863@1331249'
 
 # Authenticated endpoints (token from env or explicit arg)
 user = client.users_me()  # requires CIVITAI_TOKEN
@@ -36,7 +44,7 @@ from civitapy import CivitAIClient, ModelVersion
 
 async def main():
     client = CivitAIClient(token="my-token")
-    mv = await client.model_versions_get_async(2514310)
+    mv = await client.model_versions_get_async(1331249)
     print(mv["name"])
 
 
@@ -59,11 +67,11 @@ async for model in client.models_list_paginated_async(limit=100):
 
 Downloads resume interrupted transfers, retry transient failures (429 / 5xx /
 network errors) with exponential backoff, verify each file's size against
-`int(sizeKB * 1024)` and, once size is acceptable, its SHA256:
+`int(sizeKB * 1024)` and, once size is acceptable, its SHA256.
 
 ```python
 client = CivitAIClient()
-paths = client.download_model_version(2514310)
+paths = client.download_model_version(1331249)
 print(paths)  # absolute paths to the downloaded files
 ```
 
@@ -78,6 +86,8 @@ client = CivitAIClient(retry_count=5, min_request_interval=0.5)
 ### Base-model filter
 
 Configure a global allow-list of base models so downloads skip anything else.
+This is useful when a machine can only run "Anima" models (for example), so
+downloading assets for any other base model would be pointless.
 Matching ignores case, punctuation and whitespace, so Civitai's `ZImageTurbo`
 matches a config value `Z-Image-Turbo`:
 
