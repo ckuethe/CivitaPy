@@ -46,10 +46,10 @@ asyncio.run(main())
 Cursor-based paginators for all list endpoints:
 
 ```python
-from civitapy import CivitAIClient, Model
+from civitapy import CivitAIClient
 
 client = CivitAIClient()
-for model in client.models_list_paginated(limit=100):  # async generator
+async for model in client.models_list_paginated_async(limit=100):
     print(model.name)
 ```
 

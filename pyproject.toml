@@ -4,20 +4,36 @@ build-backend = "hatchling.build"
 
 [project]
 name = "civitapy"
-version = "0.1.2"
+version = "0.1.3"
 description = "Python bindings for the CivitAI Site API"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [
+    { name = "Chris Kuethe", email = "chris.kuethe@gmail.com" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
+]
 dependencies = [
     "httpx>=0.27",
     "pydantic>=2.0",
     "tqdm>=4.66",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ckuethe/CivitaPy"
+Source = "https://github.com/ckuethe/CivitaPy"
+Issues = "https://github.com/ckuethe/CivitaPy/issues"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=4.1",
     "ruff>=0.4",
 ]
 
@@ -27,3 +43,15 @@ packages = ["src/civitapy"]
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+
+[tool.pytest.ini_options]
+markers = ["network: requires live network access to the CivitAI API"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src/civitapy"]
+omit = ["src/civitapy/__init__.py"]
+
+[tool.coverage.report]
+fail_under = 0
+show_missing = true

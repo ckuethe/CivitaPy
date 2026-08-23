@@ -3,3 +3,4 @@ mytoken.py
 *.pyc
 __pycache__
 dist
+.coverage

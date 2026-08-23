@@ -1,11 +1,13 @@
-import os
 import sys
+
+import pytest
 
 sys.path.insert(0, "../src")  # Add src to path when running from tests/ dir
 
-from civitapy import CivitAIClient, ModelVersion, MiniModelVersion, TagItem, HashLookupResult, CurrentUser
+from civitapy import CivitAIClient, ModelVersion, MiniModelVersion, TagItem
 
 
+@pytest.mark.network
 def test_public_endpoints():
     client = CivitAIClient()
 
@@ -29,6 +31,7 @@ def test_public_endpoints():
     print(f"model_versions_mini: name='{mv_mini.version_name}', format={mv_mini.format}")
 
 
+@pytest.mark.network
 def test_auth_endpoint():
     client = CivitAIClient()
     user_data = client.users_me()

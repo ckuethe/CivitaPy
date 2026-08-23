@@ -24,21 +24,10 @@ from civitapy.errors import (
     parse_error,
 )
 from civitapy.models import (
-    Article,
-    Collection,
-    Creator,
-    FullModelFile,
     HashLookupResult,
-    Image,
-    MiniHashes,
-    MiniModelVersion,
     Model,
     ModelVersion,
     ModelVersionFile,
-    TagItem,
-    VaultInfo,
-    VaultItem,
-    VaultToggleResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -697,9 +686,7 @@ class CivitAIClient:
         See :meth:`download_model_async` for the full parameter documentation.
         """
         return self._run(
-            self.download_model_async(
-                model_id, base_model=base_model, progress=progress, verify_hash=verify_hash
-            )
+            self.download_model_async(model_id, base_model=base_model, progress=progress, verify_hash=verify_hash)
         )
 
     # -----------------------------------------------------------------------
@@ -801,17 +788,20 @@ class CivitAIClient:
         """
         return await self._request("GET", path, params=params)
 
-    async def post(self, path: str, *, json: dict[str, Any] | list | None = None) -> dict[str, Any]:
+    async def post(
+        self, path: str, *, json: dict[str, Any] | list | None = None, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Send a POST request to the Site API (low-level).
 
         Args:
             path: API path, e.g. ``/model-versions/by-hash``.
             json: Optional JSON request body.
+            params: Optional query parameters.
 
         Returns:
             The parsed JSON response as a dict.
         """
-        return await self._request("POST", path, json=json)
+        return await self._request("POST", path, json=json, params=params)
 
     async def _enums_async(self) -> dict[str, list[str]]:
         data = await self.get("/enums")
@@ -898,6 +888,63 @@ class CivitAIClient:
                 raise CivitAIRateLimitError("You've requested too many pages, please use cursors instead")
 
         return await self.get("/models", params=params)
+
+    def models_list_paginated_async(
+        self,
+        *,
+        limit: int = 100,
+        query: str | None = None,
+        ids: list[int] | None = None,
+        tag: str | None = None,
+        username: str | None = None,
+        types: str | list[str] | None = None,
+        base_models: str | list[str] | None = None,
+        checkpoint_type: str | None = None,
+        sort: str | None = "Highest Rated",
+        period: str | None = "AllTime",
+        nsfw: bool = False,
+        supports_generation: bool | None = None,
+        from_platform: bool | None = None,
+        early_access: bool | None = None,
+        favorites: bool | None = None,
+        hidden: bool | None = None,
+    ) -> AsyncPaginator[Model]:
+        """Return a cursor-based async paginator over all models (matching filters).
+
+        Unlike :meth:`models_list_async`, this returns an :class:`AsyncPaginator`
+        you can iterate with ``async for``; it transparently follows
+        ``metadata.nextCursor`` until every page is exhausted:
+
+        .. code-block:: python
+
+            async for model in client.models_list_paginated_async(limit=100):
+                print(model.name)
+
+        Cursor pagination is required when ``query`` is set (page-based paging
+        returns 400 with a search query). Pass ``cursor`` via the returned
+        paginator's params if you want to resume from a known cursor.
+        """
+        return AsyncPaginator(
+            self,
+            "/models",
+            Model,
+            limit=limit,
+            query=query,
+            ids=",".join(str(i) for i in ids) if ids else None,
+            tag=tag,
+            username=username,
+            types=_parse_enum_list(types),
+            baseModels=_parse_enum_list(base_models),
+            checkpointType=checkpoint_type,
+            sort=sort,
+            period=period,
+            nsfw=nsfw or None,
+            supportsGeneration=supports_generation,
+            fromPlatform=from_platform,
+            earlyAccess=early_access,
+            favorites=favorites,
+            hidden=hidden,
+        )
 
     async def models_get_async(self, id: int) -> dict[str, Any]:
         """Get a single model by ID.
@@ -1423,9 +1470,7 @@ class CivitAIClient:
                 continue
             dest = self._version_download_dir(model, version.base_model)
             for file in version.files:
-                path = await self._download_file_async(
-                    file, dest, progress=progress, verify_hash=verify_hash
-                )
+                path = await self._download_file_async(file, dest, progress=progress, verify_hash=verify_hash)
                 if path:
                     downloaded.append(path)
         return downloaded
@@ -1534,9 +1579,7 @@ class CivitAIClient:
                     problem,
                 )
                 return final_path
-            raise CivitAIDownloadError(
-                f"Existing file {final_path} failed verification: {problem}", final_path
-            )
+            raise CivitAIDownloadError(f"Existing file {final_path} failed verification: {problem}", final_path)
 
         retries = self._retry_count if retry_count is None else retry_count
 
@@ -1704,9 +1747,7 @@ class CivitAIClient:
                 except OSError:
                     pass
                 raise CivitAIDownloadError(f"SHA256 mismatch for {part_path}", part_path)
-            logger.warning(
-                "Accepting %r despite SHA256 mismatch (verify_hash=False)", part_path
-            )
+            logger.warning("Accepting %r despite SHA256 mismatch (verify_hash=False)", part_path)
 
         _os_mod.replace(part_path, final_path)
         return final_path
@@ -1742,8 +1783,7 @@ class CivitAIClient:
                 details = "The file is private and restricted to its owner."
         if status_code == 401:
             raise CivitAIAuthError(
-                f"Cannot download {target_name}: downloads require a valid API token "
-                f"(set CIVITAI_TOKEN).",
+                f"Cannot download {target_name}: downloads require a valid API token (set CIVITAI_TOKEN).",
                 details or "If the model is gated by early access, an active membership is required.",
             )
         raise CivitAIForbiddenError(
@@ -1781,9 +1821,7 @@ class CivitAIClient:
         """
         size = _os_mod.path.getsize(path)
         if size < expected_size:
-            return (
-                f"size mismatch (got {size} bytes, expected at least {expected_size} "
-            )
+            return f"size mismatch (got {size} bytes, expected at least {expected_size})"
         if sha256 and CivitAIClient._sha256_hex(path) != sha256:
             return "SHA256 hash mismatch"
         return None
