@@ -242,6 +242,7 @@ class CivitAIClient:
         retry_count: int = 3,
         min_request_interval: float = 0.0,
         base_models: list[str] | None = None,
+        verify_hash: bool = False,
     ):
         """Create a CivitAI API client.
 
@@ -268,6 +269,11 @@ class CivitAIClient:
                 Matching ignores case, punctuation and whitespace, so a config value
                 like ``"Z-Image-Turbo"`` matches Civitai's ``"ZImageTurbo"`` and
                 ``"Flux.2 Klein 4B"`` matches ``"Flux.2 Klein 4B"``.
+            verify_hash: Default for whether downloaded files' SHA256 must match
+                the API's hash. ``False`` (default) tolerates mismatches with a
+                warning since Civitai can report flaky hashes; ``True`` opts in to
+                strict verification that raises :class:`CivitAIDownloadError`.
+                Individual ``download_*`` calls can override this.
         """
         self._base_url = base_url.rstrip("/")
         # Prefer explicit token arg → fall back to CIVITAI_TOKEN env var
@@ -277,6 +283,7 @@ class CivitAIClient:
         self._retry_count = max(1, int(retry_count))
         self._rate_limiter = _RateLimiter(min_interval=min_request_interval)
         self._base_model_filters = [f for f in (base_models or []) if f and f.strip()] or None
+        self._verify_hash = bool(verify_hash)
 
     @property
     def auth_header(self) -> dict[str, str] | None:
@@ -653,6 +660,7 @@ class CivitAIClient:
         filename: str | None = None,
         base_model: str | None = None,
         progress: bool = False,
+        verify_hash: bool | None = None,
     ) -> list[str]:
         """Download every file of a single model version (sync wrapper for
         :meth:`download_model_version_async`).
@@ -664,7 +672,11 @@ class CivitAIClient:
         """
         return self._run(
             self.download_model_version_async(
-                version_id, filename=filename, base_model=base_model, progress=progress
+                version_id,
+                filename=filename,
+                base_model=base_model,
+                progress=progress,
+                verify_hash=verify_hash,
             )
         )
 
@@ -674,6 +686,7 @@ class CivitAIClient:
         *,
         base_model: str | None = None,
         progress: bool = False,
+        verify_hash: bool | None = None,
     ) -> list[str]:
         """Download all files of every version of a model (sync wrapper for
         :meth:`download_model_async`).
@@ -684,7 +697,9 @@ class CivitAIClient:
         See :meth:`download_model_async` for the full parameter documentation.
         """
         return self._run(
-            self.download_model_async(model_id, base_model=base_model, progress=progress)
+            self.download_model_async(
+                model_id, base_model=base_model, progress=progress, verify_hash=verify_hash
+            )
         )
 
     # -----------------------------------------------------------------------
@@ -1304,6 +1319,7 @@ class CivitAIClient:
         filename: str | None = None,
         base_model: str | None = None,
         progress: bool = False,
+        verify_hash: bool | None = None,
     ) -> list[str]:
         """Download every file of a single model version.
 
@@ -1323,12 +1339,18 @@ class CivitAIClient:
             base_model: If given and it doesn't match the version's base model,
                 nothing is downloaded and an empty list is returned.
             progress: Show a tqdm progress bar per file when ``True``.
+            verify_hash: When ``True``, fail the download (raise
+                :class:`CivitAIDownloadError`) if a file's SHA256 doesn't match the
+                API's hash. When ``False`` (default), SHA256 mismatches are
+                tolerated and only logged as a warning — useful since Civitai can
+                report flaky hashes.
 
         Returns:
             A list of absolute paths to the successfully downloaded files.
 
         Raises:
-            CivitAIDownloadError: If a file's size or SHA256 fails verification.
+            CivitAIDownloadError: If a file's size fails verification, or its
+                SHA256 fails verification when ``verify_hash`` is ``True``.
         """
         data = await self.model_versions_get_async(version_id)
         version = ModelVersion(**data)
@@ -1347,7 +1369,12 @@ class CivitAIClient:
         for file in version.files:
             use_name = filename if (file.primary or len(version.files) == 1) else None
             path = await self._download_file_async(
-                file, dest, filename=use_name, progress=progress, version=version
+                file,
+                dest,
+                filename=use_name,
+                progress=progress,
+                version=version,
+                verify_hash=verify_hash,
             )
             if path:
                 downloaded.append(path)
@@ -1359,6 +1386,7 @@ class CivitAIClient:
         *,
         base_model: str | None = None,
         progress: bool = False,
+        verify_hash: bool | None = None,
     ) -> list[str]:
         """Download all files of every version of a model.
 
@@ -1373,12 +1401,17 @@ class CivitAIClient:
             base_model: Optional base model to restrict downloads to
                 (e.g. ``SDXL 1.0``).
             progress: Show a tqdm progress bar per file when ``True``.
+            verify_hash: When ``True``, fail the download (raise
+                :class:`CivitAIDownloadError`) if a file's SHA256 doesn't match the
+                API's hash. When ``False`` (default), SHA256 mismatches are
+                tolerated and only logged as a warning.
 
         Returns:
             A list of absolute paths to the successfully downloaded files.
 
         Raises:
-            CivitAIDownloadError: If a file's size or SHA256 fails verification.
+            CivitAIDownloadError: If a file's size fails verification, or its
+                SHA256 fails verification when ``verify_hash`` is ``True``.
         """
         data = await self.models_get_async(model_id)
         model = Model(**data)
@@ -1390,7 +1423,9 @@ class CivitAIClient:
                 continue
             dest = self._version_download_dir(model, version.base_model)
             for file in version.files:
-                path = await self._download_file_async(file, dest, progress=progress)
+                path = await self._download_file_async(
+                    file, dest, progress=progress, verify_hash=verify_hash
+                )
                 if path:
                     downloaded.append(path)
         return downloaded
@@ -1452,13 +1487,15 @@ class CivitAIClient:
         progress: bool = False,
         retry_count: int | None = None,
         version: ModelVersion | None = None,
+        verify_hash: bool | None = None,
     ) -> str | None:
         """Download a single model file, resuming, retrying and verifying it.
 
         Downloads to ``<name>.part`` in ``destination_dir``, resuming from an
         existing partial via an HTTP Range request when present. Once the download
         reaches ``int(sizeKB * 1024)`` bytes it is renamed to its final name and,
-        if the API provides a SHA256, verified.
+        if the API provides a SHA256, verified (unless ``verify_hash`` is
+        ``False``, the default).
 
         Transient failures (429, 5xx, network errors, or an interrupted transfer)
         are retried up to ``retry_count`` times (defaulting to the client's
@@ -1472,6 +1509,7 @@ class CivitAIClient:
 
         When ``progress`` is ``True`` a tqdm progress bar is shown for the transfer.
         """
+        verify_hash = self._verify_hash if verify_hash is None else bool(verify_hash)
         target_name = filename or file.name
         final_path = _os_mod.path.join(destination_dir, target_name)
         part_path = final_path + ".part"
@@ -1488,6 +1526,13 @@ class CivitAIClient:
         if _os_mod.path.exists(final_path):
             problem = self._file_problem(final_path, expected, sha256)
             if problem is None:
+                return final_path
+            if not verify_hash and "hash" in problem:
+                logger.warning(
+                    "Accepting existing file %r despite %s (verify_hash=False)",
+                    final_path,
+                    problem,
+                )
                 return final_path
             raise CivitAIDownloadError(
                 f"Existing file {final_path} failed verification: {problem}", final_path
@@ -1506,6 +1551,7 @@ class CivitAIClient:
                     url,
                     progress=progress,
                     version=version,
+                    verify_hash=verify_hash,
                 )
                 if result is not None:
                     return result
@@ -1520,11 +1566,12 @@ class CivitAIClient:
                 if retry_after:
                     delay = max(delay, float(retry_after))
                 logger.warning(
-                    "Download of %r failed (attempt %d/%d): %s; retrying in %.1fs",
+                    "Download of %r failed (attempt %d/%d): %s: %s; retrying in %.1fs",
                     target_name,
                     attempt,
                     retries,
                     type(exc).__name__,
+                    exc,
                     delay,
                 )
                 await asyncio.sleep(delay)
@@ -1553,6 +1600,7 @@ class CivitAIClient:
         *,
         progress: bool = False,
         version: ModelVersion | None = None,
+        verify_hash: bool | None = None,
     ) -> str | None:
         """One attempt at downloading ``file``, resuming an existing partial.
 
@@ -1570,6 +1618,13 @@ class CivitAIClient:
                 _os_mod.replace(part_path, final_path)
                 problem = self._file_problem(final_path, expected, sha256)
                 if problem is None:
+                    return final_path
+                if not verify_hash and "hash" in problem:
+                    logger.warning(
+                        "Accepting partial download %r despite %s (verify_hash=False)",
+                        final_path,
+                        problem,
+                    )
                     return final_path
                 raise CivitAIDownloadError(f"Partial download {final_path} failed verification: {problem}", final_path)
             with open(part_path, "rb") as f:
@@ -1643,11 +1698,15 @@ class CivitAIClient:
             return None
 
         if sha256 and self._sha256_hex(part_path) != sha256:
-            try:
-                _os_mod.remove(part_path)
-            except OSError:
-                pass
-            raise CivitAIDownloadError(f"SHA256 mismatch for {part_path}", part_path)
+            if verify_hash:
+                try:
+                    _os_mod.remove(part_path)
+                except OSError:
+                    pass
+                raise CivitAIDownloadError(f"SHA256 mismatch for {part_path}", part_path)
+            logger.warning(
+                "Accepting %r despite SHA256 mismatch (verify_hash=False)", part_path
+            )
 
         _os_mod.replace(part_path, final_path)
         return final_path
