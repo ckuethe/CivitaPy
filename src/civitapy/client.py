@@ -6,7 +6,8 @@ import logging
 import os as _os_mod
 import re
 import time
-from typing import Any, AsyncIterator, TypeVar
+from collections.abc import AsyncIterator
+from typing import Any, TypeVar
 
 import httpx
 from pydantic import BaseModel
@@ -14,13 +15,13 @@ from pydantic import BaseModel
 from civitapy.errors import (
     CivitAIAuthError,
     CivitAIBadRequestError,
+    CivitAIDownloadError,
     CivitAIError,
     CivitAIForbiddenError,
     CivitAIHTTPError,
     CivitAINotFoundError,
     CivitAIRateLimitError,
     CivitAIServerError,
-    CivitAIDownloadError,
     parse_error,
 )
 from civitapy.models import (
@@ -1670,9 +1671,7 @@ class CivitAIClient:
                     )
                     return final_path
                 raise CivitAIDownloadError(f"Partial download {final_path} failed verification: {problem}", final_path)
-            with open(part_path, "rb") as f:
-                while chunk := f.read(1024 * 1024):
-                    hasher.update(chunk)
+            self._update_hasher_from_file(part_path, hasher)
 
         headers = self.auth_header or {}
         if offset:
@@ -1686,48 +1685,53 @@ class CivitAIClient:
                 raise RuntimeError("progress=True requires the 'tqdm' package; install it first") from exc
 
         await self._rate_limiter.wait_if_needed()
-        async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True, headers=headers) as session:
-            async with session.stream("GET", url) as resp:
-                self._rate_limiter.observe(resp.headers)
-                if resp.status_code == 206:
-                    write_mode = "ab"
-                elif resp.status_code == 200:
-                    # Server ignored the Range header; restart from scratch.
-                    write_mode = "wb"
-                    offset = 0
-                    hasher = hashlib.sha256()
-                elif resp.status_code == 429:
-                    raise CivitAIRateLimitError(
-                        f"Rate limited while downloading {target_name}", self._retry_after(resp.headers)
-                    )
-                elif resp.status_code in (401, 403):
-                    self._raise_download_auth_error(resp.status_code, target_name, version)
-                elif resp.status_code == 404:
-                    raise CivitAINotFoundError(f"File {target_name} not found on Civitai")
-                elif resp.status_code >= 500:
-                    raise CivitAIServerError(resp.status_code, f"Server error while downloading {target_name}")
-                else:
-                    raise CivitAIHTTPError(resp.status_code, f"Failed to download {target_name}")
+        async with (
+            httpx.AsyncClient(timeout=self._timeout, follow_redirects=True, headers=headers) as session,
+            session.stream("GET", url) as resp,
+        ):
+            self._rate_limiter.observe(resp.headers)
+            if resp.status_code == 206:
+                write_mode = "ab"
+            elif resp.status_code == 200:
+                # Server ignored the Range header; restart from scratch.
+                write_mode = "wb"
+                offset = 0
+                hasher = hashlib.sha256()
+            elif resp.status_code == 429:
+                raise CivitAIRateLimitError(
+                    f"Rate limited while downloading {target_name}", self._retry_after(resp.headers)
+                )
+            elif resp.status_code in (401, 403):
+                self._raise_download_auth_error(resp.status_code, target_name, version)
+            elif resp.status_code == 404:
+                raise CivitAINotFoundError(f"File {target_name} not found on Civitai")
+            elif resp.status_code >= 500:
+                raise CivitAIServerError(resp.status_code, f"Server error while downloading {target_name}")
+            else:
+                raise CivitAIHTTPError(resp.status_code, f"Failed to download {target_name}")
 
-                if progress:
-                    bar = tqdm(
-                        total=expected - offset,
-                        initial=0,
-                        unit="B",
-                        unit_scale=True,
-                        unit_divisor=1024,
-                        desc=target_name,
-                    )
+            if progress:
+                bar = tqdm(
+                    total=expected - offset,
+                    initial=0,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    desc=target_name,
+                )
+            file_handle = await asyncio.to_thread(open, part_path, write_mode)
+            try:
                 try:
-                    with open(part_path, write_mode) as f:
-                        async for chunk in resp.aiter_bytes():
-                            f.write(chunk)
-                            hasher.update(chunk)
-                            if bar is not None:
-                                bar.update(len(chunk))
+                    async for chunk in resp.aiter_bytes():
+                        await asyncio.to_thread(file_handle.write, chunk)
+                        hasher.update(chunk)
+                        if bar is not None:
+                            bar.update(len(chunk))
                 finally:
-                    if bar is not None:
-                        bar.close()
+                    await asyncio.to_thread(file_handle.close)
+            finally:
+                if bar is not None:
+                    bar.close()
 
         downloaded = _os_mod.path.getsize(part_path)
         if downloaded < expected:
@@ -1792,6 +1796,13 @@ class CivitAIClient:
             or "This file is likely gated by an early-access window or restricted "
             "to paying members; an active Civitai membership may be required.",
         )
+
+    @staticmethod
+    def _update_hasher_from_file(path: str, hasher: Any) -> None:
+        """Update ``hasher`` using file content at ``path``."""
+        with open(path, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                hasher.update(chunk)
 
     @staticmethod
     def _sha256_hex(path: str) -> str:

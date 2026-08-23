@@ -1,6 +1,5 @@
 import asyncio
 
-
 from conftest import FakeResponse, mock_async_client
 
 from civitapy import AsyncPaginator, Model

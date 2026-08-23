@@ -4,7 +4,7 @@ import pytest
 
 sys.path.insert(0, "../src")  # Add src to path when running from tests/ dir
 
-from civitapy import CivitAIClient, ModelVersion, MiniModelVersion, TagItem
+from civitapy import CivitAIClient, MiniModelVersion, ModelVersion, TagItem
 
 
 @pytest.mark.network

@@ -2,6 +2,7 @@ import asyncio
 from unittest import mock
 
 import pytest
+from conftest import FakeResponse, mock_async_client
 
 from civitapy.errors import (
     CivitAIAuthError,
@@ -12,8 +13,6 @@ from civitapy.errors import (
     CivitAIRateLimitError,
     CivitAIServerError,
 )
-
-from conftest import FakeResponse, mock_async_client
 
 
 def run(coro):
@@ -141,9 +140,11 @@ def test_request_exhausts_http_errors(client):
         raise err
 
     client._retry_count = 2
-    with mock.patch("civitapy.client.httpx.AsyncClient", return_value=_fake_client_for(always_fail)):
-        with pytest.raises(httpx.HTTPError):
-            run(client._request("GET", "/models"))
+    with (
+        mock.patch("civitapy.client.httpx.AsyncClient", return_value=_fake_client_for(always_fail)),
+        pytest.raises(httpx.HTTPError),
+    ):
+        run(client._request("GET", "/models"))
 
 
 def test_request_forwards_params(client):

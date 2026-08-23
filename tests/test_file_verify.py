@@ -1,6 +1,5 @@
 import hashlib
 
-
 from civitapy import CivitAIClient
 
 

@@ -33,10 +33,12 @@ Every sync method has an `_async` counterpart for use in async contexts:
 import asyncio
 from civitapy import CivitAIClient, ModelVersion
 
+
 async def main():
     client = CivitAIClient(token="my-token")
     mv = await client.model_versions_get_async(2514310)
     print(mv["name"])
+
 
 asyncio.run(main())
 ```

@@ -2,17 +2,15 @@ import asyncio
 import hashlib
 
 import pytest
+from conftest import FakeResponse, mock_async_client
 
+from civitapy import ModelVersionFile
 from civitapy.errors import (
     CivitAIAuthError,
     CivitAIDownloadError,
     CivitAIForbiddenError,
     CivitAINotFoundError,
 )
-
-from civitapy import ModelVersionFile
-
-from conftest import FakeResponse, mock_async_client
 
 
 def run(coro):
