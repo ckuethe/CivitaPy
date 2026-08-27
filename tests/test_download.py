@@ -4,7 +4,7 @@ import hashlib
 import pytest
 from conftest import FakeResponse, mock_async_client
 
-from civitapy import Model, ModelVersionFile
+from civitapy import Model, ModelVersion, ModelVersionFile
 from civitapy.errors import (
     CivitAIAuthError,
     CivitAIDownloadError,
@@ -164,6 +164,31 @@ def test_model_download_dir_override(client, tmp_path):
     override_dir = client._model_download_dir(model, destdir="/tmp")
     assert override_dir == "/tmp/Checkpoint/42_my_model_some_creator"
     assert override_dir != default_dir
+
+
+def test_model_version_summary_missing_published_at():
+    data = {
+        "id": 42,
+        "name": "x",
+        "type": "Checkpoint",
+        "modelVersions": [{"id": 20, "name": "v", "baseModel": "SDXL 1.0", "index": 2}],
+    }
+    model = Model(**data)
+    assert model.model_versions[0].published_at is None
+
+
+def test_model_version_missing_published_at():
+    data = {
+        "id": 20,
+        "modelId": 42,
+        "name": "v1",
+        "baseModel": "SDXL 1.0",
+        "createdAt": "2024-01-01T00:00:00Z",
+        "updatedAt": "2024-01-01T00:00:00Z",
+        "files": [],
+    }
+    version = ModelVersion(**data)
+    assert version.published_at is None
 
 
 def test_version_download_dir_override(client, tmp_path):

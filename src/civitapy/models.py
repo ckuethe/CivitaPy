@@ -256,7 +256,7 @@ class ModelVersion(BaseModel):
     nsfw_level: int = Field(default=0, alias="nsfwLevel")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
-    published_at: datetime = Field(alias="publishedAt")
+    published_at: datetime | None = Field(default=None, alias="publishedAt")
     upload_type: str | None = Field(default=None, alias="uploadType")  # Created, Trained, etc.
     usage_control: str | None = Field(default=None, alias="usageControl")  # e.g. "Download"
     trained_words: list[str] = []  # Words that influence the model output
@@ -284,7 +284,7 @@ class MiniModelVersion(BaseModel):
     model_name: str = Field(alias="modelName")
     base_model: str = Field(alias="baseModel")
     availability: str | None = None
-    published_at: datetime = Field(alias="publishedAt")
+    published_at: datetime | None = Field(default=None, alias="publishedAt")
     size: float | None = None  # File size in KB
     file_type: str | None = Field(default=None, alias="fileType")  # e.g. "Model", "VAE"
     file_name: str | None = Field(default=None, alias="fileName")
