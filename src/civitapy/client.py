@@ -651,12 +651,13 @@ class CivitAIClient:
         base_model: str | None = None,
         progress: bool = False,
         verify_hash: bool | None = None,
+        destdir: str | None = None,
     ) -> list[str]:
         """Download every file of a single model version (sync wrapper for
         :meth:`download_model_version_async`).
 
-        Files are placed under the client's ``download_dir`` at
-        ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``.
+        Files are placed under the client's ``download_dir`` (or ``destdir`` when
+        given) at ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``.
 
         See :meth:`download_model_version_async` for the full parameter documentation.
         """
@@ -667,6 +668,7 @@ class CivitAIClient:
                 base_model=base_model,
                 progress=progress,
                 verify_hash=verify_hash,
+                destdir=destdir,
             )
         )
 
@@ -677,17 +679,20 @@ class CivitAIClient:
         base_model: str | None = None,
         progress: bool = False,
         verify_hash: bool | None = None,
+        destdir: str | None = None,
     ) -> list[str]:
         """Download all files of every version of a model (sync wrapper for
         :meth:`download_model_async`).
 
-        Files are placed under the client's ``download_dir`` at
-        ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``.
+        Files are placed under the client's ``download_dir`` (or ``destdir`` when
+        given) at ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``.
 
         See :meth:`download_model_async` for the full parameter documentation.
         """
         return self._run(
-            self.download_model_async(model_id, base_model=base_model, progress=progress, verify_hash=verify_hash)
+            self.download_model_async(
+                model_id, base_model=base_model, progress=progress, verify_hash=verify_hash, destdir=destdir
+            )
         )
 
     # -----------------------------------------------------------------------
@@ -1368,6 +1373,7 @@ class CivitAIClient:
         base_model: str | None = None,
         progress: bool = False,
         verify_hash: bool | None = None,
+        destdir: str | None = None,
     ) -> list[str]:
         """Download every file of a single model version.
 
@@ -1392,6 +1398,10 @@ class CivitAIClient:
                 API's hash. When ``False`` (default), SHA256 mismatches are
                 tolerated and only logged as a warning — useful since Civitai can
                 report flaky hashes.
+            destdir: Override the client's default download directory for this
+                download. Files are placed under ``destdir`` at
+                ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``
+                instead of the client's configured ``download_dir``.
 
         Returns:
             A list of absolute paths to the successfully downloaded files.
@@ -1411,7 +1421,7 @@ class CivitAIClient:
         # build the canonical download path.
         model_data = await self.models_get_async(version.model_id)
         model = Model(**model_data)
-        dest = self._version_download_dir(model, version.base_model)
+        dest = self._version_download_dir(model, version.base_model, destdir=destdir)
 
         downloaded: list[str] = []
         for file in version.files:
@@ -1435,6 +1445,7 @@ class CivitAIClient:
         base_model: str | None = None,
         progress: bool = False,
         verify_hash: bool | None = None,
+        destdir: str | None = None,
     ) -> list[str]:
         """Download all files of every version of a model.
 
@@ -1453,6 +1464,10 @@ class CivitAIClient:
                 :class:`CivitAIDownloadError`) if a file's SHA256 doesn't match the
                 API's hash. When ``False`` (default), SHA256 mismatches are
                 tolerated and only logged as a warning.
+            destdir: Override the client's default download directory for this
+                download. Files are placed under ``destdir`` at
+                ``<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/``
+                instead of the client's configured ``download_dir``.
 
         Returns:
             A list of absolute paths to the successfully downloaded files.
@@ -1469,7 +1484,7 @@ class CivitAIClient:
                 continue
             if base_model is None and not self._should_download_base_model(version.base_model):
                 continue
-            dest = self._version_download_dir(model, version.base_model)
+            dest = self._version_download_dir(model, version.base_model, destdir=destdir)
             for file in version.files:
                 path = await self._download_file_async(file, dest, progress=progress, verify_hash=verify_hash)
                 if path:
@@ -1488,8 +1503,12 @@ class CivitAIClient:
         cleaned = _INVALID_COMPONENT_RE.sub("_", str(value))
         return cleaned.strip("._-")
 
-    def _model_download_dir(self, model: Model) -> str:
-        """Root directory for a model: ``<modeltype>/<modelid>_<modelname>_<creatorname>``."""
+    def _model_download_dir(self, model: Model, *, destdir: str | None = None) -> str:
+        """Root directory for a model: ``<modeltype>/<modelid>_<modelname>_<creatorname>``.
+
+        Uses ``destdir`` as the root when given, otherwise the client's
+        ``download_dir``.
+        """
         creator = model.creator.username if (model.creator and model.creator.username) else ""
         parts = [
             str(model.id),
@@ -1499,12 +1518,13 @@ class CivitAIClient:
             parts.append(self._sanitize_component(creator))
         slug = "_".join(parts)
         model_type = self._sanitize_component(model.type) or "unknown"
-        return _os_mod.path.join(self._download_dir, model_type, slug)
+        root = destdir if destdir is not None else self._download_dir
+        return _os_mod.path.join(root, model_type, slug)
 
-    def _version_download_dir(self, model: Model, base_model: str) -> str:
+    def _version_download_dir(self, model: Model, base_model: str, *, destdir: str | None = None) -> str:
         """Directory for a single version's files: ``.../<basemodel>``."""
         base = self._sanitize_component(base_model) or "unknown"
-        return _os_mod.path.join(self._model_download_dir(model), base)
+        return _os_mod.path.join(self._model_download_dir(model, destdir=destdir), base)
 
     @staticmethod
     def _normalize_base_model(value: str) -> str:

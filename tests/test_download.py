@@ -4,7 +4,7 @@ import hashlib
 import pytest
 from conftest import FakeResponse, mock_async_client
 
-from civitapy import ModelVersionFile
+from civitapy import Model, ModelVersion, ModelVersionFile
 from civitapy.errors import (
     CivitAIAuthError,
     CivitAIDownloadError,
@@ -124,3 +124,66 @@ def test_download_403_raises_forbidden(client, tmp_path):
     file = _file()
     with pytest.raises(CivitAIForbiddenError):
         _attempt(client, file, final, part, 1024, None, "https://example.com/dl", b"", status=403)
+
+
+# -- destdir override --
+
+
+def _make_model(tmp_path, base_model="SDXL 1.0", size_kb=1.0, name="my model"):
+    data = {
+        "id": 42,
+        "name": name,
+        "type": "Checkpoint",
+        "creator": {"id": 7, "username": "some creator"},
+        "modelVersions": [
+            {
+                "id": 99,
+                "name": "v1",
+                "baseModel": base_model,
+                "publishedAt": "2024-01-01T00:00:00Z",
+                "files": [
+                    {
+                        "id": 1,
+                        "name": "m.bin",
+                        "type": "Model",
+                        "sizeKB": size_kb,
+                        "downloadUrl": "https://example.com/dl",
+                    }
+                ],
+            }
+        ],
+    }
+    return Model(**data)
+
+
+def test_model_download_dir_override(client, tmp_path):
+    model = _make_model(tmp_path)
+    default_dir = client._model_download_dir(model)
+    assert default_dir == str(tmp_path / "Checkpoint" / "42_my_model_some_creator")
+
+    override_dir = client._model_download_dir(model, destdir="/tmp")
+    assert override_dir == "/tmp/Checkpoint/42_my_model_some_creator"
+    assert override_dir != default_dir
+
+
+def test_version_download_dir_override(client, tmp_path):
+    model = _make_model(tmp_path)
+    default_dir = client._version_download_dir(model, "SDXL 1.0")
+    assert default_dir == str(tmp_path / "Checkpoint" / "42_my_model_some_creator" / "SDXL_1.0")
+
+    override_dir = client._version_download_dir(model, "SDXL 1.0", destdir="/tmp")
+    assert override_dir == "/tmp/Checkpoint/42_my_model_some_creator/SDXL_1.0"
+
+
+def test_download_model_async_destdir(client, tmp_path):
+    model = _make_model(tmp_path, size_kb=1.0)
+    data = b"d" * 1024
+    model_resp = FakeResponse(json_data=model.model_dump(mode="json", by_alias=True), content=b"{}")
+    file_resp = FakeResponse(200, content=data)
+    with mock_async_client([model_resp, file_resp]):
+        paths = run(client.download_model_async(42, destdir="/tmp"))
+
+    assert len(paths) == 1
+    assert paths[0].startswith("/tmp/")
+    assert paths[0] == "/tmp/Checkpoint/42_my_model_some_creator/SDXL_1.0/m.bin"
+    assert open(paths[0], "rb").read() == data
