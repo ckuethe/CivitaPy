@@ -4,7 +4,7 @@ import hashlib
 import pytest
 from conftest import FakeResponse, mock_async_client
 
-from civitapy import Model, ModelVersion, ModelVersionFile
+from civitapy import Model, ModelVersionFile
 from civitapy.errors import (
     CivitAIAuthError,
     CivitAIDownloadError,
@@ -186,4 +186,5 @@ def test_download_model_async_destdir(client, tmp_path):
     assert len(paths) == 1
     assert paths[0].startswith("/tmp/")
     assert paths[0] == "/tmp/Checkpoint/42_my_model_some_creator/SDXL_1.0/m.bin"
-    assert open(paths[0], "rb").read() == data
+    with open(paths[0], "rb") as f:
+        assert f.read() == data
