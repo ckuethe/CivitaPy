@@ -167,7 +167,7 @@ class ModelVersionSummary(BaseModel):
     name: str
     base_model: str = Field(alias="baseModel")  # e.g. "Illustrious", "SDXL 1.0"
     base_model_type: str | None = Field(default=None, alias="baseModelType")  # Standard, Inpainting, Refiner, Pix2Pix
-    published_at: datetime = Field(alias="publishedAt")
+    published_at: datetime | None = Field(default=None, alias="publishedAt")
     supports_generation: bool = False
     stats: VersionStats | None = None
     files: list[ModelVersionFile] = []
