@@ -48,7 +48,7 @@ class PlanItem:
 
     @property
     def dest_path(self) -> str:
-        return os.path.join(self.dest_dir, self.file.name)
+        return _join_destdir(self.dest_dir, self.file.name)
 
 
 def parse_input(value: str) -> tuple[str, int]:

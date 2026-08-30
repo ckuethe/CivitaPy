@@ -1598,7 +1598,7 @@ class CivitAIClient:
         """
         verify_hash = self._verify_hash if verify_hash is None else bool(verify_hash)
         target_name = filename or file.name
-        final_path = _os_mod.path.join(destination_dir, target_name)
+        final_path = _join_destdir(destination_dir, target_name)
         part_path = final_path + ".part"
         expected = int(file.size_kb * 1024)
         sha256 = (file.hashes or {}).get("SHA256") if isinstance(file.hashes, dict) else None
