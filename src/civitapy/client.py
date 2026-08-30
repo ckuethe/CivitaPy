@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os as _os_mod
 import re
@@ -100,15 +101,19 @@ class _RateLimiter:
     def observe(self, headers) -> None:
         """Record rate-limit / retry-after headers from a response."""
         get = headers.get
-        raw_remaining = get("X-RateLimit-Remaining") or get("x-ratelimit-remaining")
-        raw_reset = get("X-RateLimit-Reset") or get("x-ratelimit-reset")
-        raw_retry_after = get("Retry-After") or get("retry-after")
+        # Civitai sends bare ``RateLimit-*`` headers (per its API docs); accept
+        # the ``X-RateLimit-*`` variants too for robustness. httpx Headers are
+        # case-insensitive, so casing here is irrelevant.
+        raw_remaining = get("RateLimit-Remaining") or get("X-RateLimit-Remaining")
+        raw_reset = get("RateLimit-Reset") or get("X-RateLimit-Reset")
+        raw_retry_after = get("Retry-After")
         if raw_remaining is not None:
             try:
                 self._remaining = int(raw_remaining)
             except ValueError:
                 pass
         if raw_reset is not None:
+            # Civitai's ``RateLimit-Reset`` is a Unix epoch timestamp (seconds).
             try:
                 self._reset_ts = float(raw_reset)
             except ValueError:
@@ -723,7 +728,14 @@ class CivitAIClient:
                 if resp.status_code == 204:
                     return {}
 
-                data = resp.json() if resp.content else None
+                # 429 before attempting any JSON parsing: Civitai's 429 body is
+                # often not JSON (HTML/plain text), so never trust resp.json() here.
+                # The Retry-After header drives the backoff, not the body.
+                if resp.status_code == 429:
+                    retry_after = self._retry_after(resp.headers)
+                    raise CivitAIRateLimitError("Rate limit exceeded", retry_after)
+
+                data = self._maybe_json(resp)
                 error_data = data or {}
                 is_trpc_error = "code" in error_data and "message" in error_data
 
@@ -739,11 +751,6 @@ class CivitAIClient:
                         raise CivitAIForbiddenError(msg)
                     else:
                         raise CivitAIBadRequestError(msg, issues)
-
-                # 429 before generic error handling (need Retry-After header access)
-                if resp.status_code == 429:
-                    retry_after = float(resp.headers.get("Retry-After", 1))
-                    raise CivitAIRateLimitError(data.get("error") or data.get("message"), retry_after)
 
                 # Generic error handling for non-success status codes
                 if not resp.is_success:
@@ -1785,6 +1792,20 @@ class CivitAIClient:
         try:
             return float(raw)
         except ValueError:
+            return None
+
+    @staticmethod
+    def _maybe_json(resp) -> dict[str, Any] | None:
+        """Parse ``resp`` as JSON, tolerating non-JSON error bodies.
+
+        Civitai can return non-JSON bodies on error responses (429s in
+        particular), so guard the parse instead of letting ``resp.json()`` raise.
+        """
+        if not resp.content:
+            return None
+        try:
+            return resp.json()
+        except (ValueError, json.JSONDecodeError):
             return None
 
     def _raise_download_auth_error(self, status_code: int, target_name: str, version: ModelVersion | None) -> None:

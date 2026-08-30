@@ -176,4 +176,3 @@ def test_cli_version_flag_prints_version(capsys):
         build_parser().parse_args(["--version"])
     assert exc.value.code == 0
     assert civitapy.__version__ in capsys.readouterr().out
-

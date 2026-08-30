@@ -84,7 +84,7 @@ async def build_plan(
     destdir: str,
     flat: bool = False,
 ) -> list[PlanItem]:
-    """    Resolve every input into a flat list of files to download.
+    """Resolve every input into a flat list of files to download.
 
     ``destdir`` roots the output directories. When ``flat`` is ``True`` the
     ComfyUI layout is used (``<destdir>/<type>/<id>_<name>``); otherwise the
@@ -106,7 +106,12 @@ async def build_plan(
             model_data = await client.models_get_async(version.model_id)
             model = Model(**model_data)
             items.extend(
-                PlanItem(model=model, version=version, file=file, dest_dir=destination_dir(client, model, version, destdir=destdir, flat=flat))
+                PlanItem(
+                    model=model,
+                    version=version,
+                    file=file,
+                    dest_dir=destination_dir(client, model, version, destdir=destdir, flat=flat),
+                )
                 for file in version.files
                 if file.download_url
             )
@@ -117,7 +122,12 @@ async def build_plan(
                 if not client._should_download_base_model(version.base_model):
                     continue
                 items.extend(
-                    PlanItem(model=model, version=version, file=file, dest_dir=destination_dir(client, model, version, destdir=destdir, flat=flat))
+                    PlanItem(
+                        model=model,
+                        version=version,
+                        file=file,
+                        dest_dir=destination_dir(client, model, version, destdir=destdir, flat=flat),
+                    )
                     for file in version.files
                     if file.download_url
                 )

@@ -64,6 +64,34 @@ def test_request_429_uses_retry_after_header(client):
     assert exc.value.retry_after == 7.0
 
 
+def test_request_429_non_json_body_does_not_crash(client):
+    # Civitai 429s can return a non-JSON body; the retry path must not raise
+    # JSONDecodeError before it can back off.
+    client._retry_count = 2
+    first = FakeResponse(429, content=b"<html>rate limited</html>", headers={"Retry-After": "2"})
+    second = FakeResponse(200, {"items": []})
+    with mock_async_client([first, second]):
+        assert run(client.get("/models")) == {"items": []}
+
+
+def test_request_429_retries_honor_retry_after(client):
+    client._retry_count = 2
+    first = FakeResponse(429, content=b"too many", headers={"Retry-After": "3"})
+    second = FakeResponse(200, {"items": []})
+    with mock_async_client([first, second]):
+        assert run(client.get("/models")) == {"items": []}
+
+
+def test_rate_limiter_observes_bare_ratelimit_headers(client):
+    # Civitai sends bare ``RateLimit-*`` headers; the limiter must honor them.
+    resp = FakeResponse(200, {"items": []}, headers={"RateLimit-Remaining": "0", "RateLimit-Reset": "99"})
+    with mock_async_client(resp):
+        assert run(client.get("/models")) == {"items": []}
+    limiter = client._rate_limiter
+    assert limiter._remaining == 0
+    assert limiter._reset_ts is not None
+
+
 def test_request_generic_401(client):
     resp = FakeResponse(401, {"error": "no auth"})
     with mock_async_client(resp), pytest.raises(CivitAIAuthError):
