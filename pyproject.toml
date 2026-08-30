@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "civitapy"
-version = "0.1.3"
+version = "0.1.4"
 description = "Python bindings for the CivitAI Site API"
 readme = "README.md"
 license = "MIT"
@@ -29,6 +29,9 @@ dependencies = [
 Homepage = "https://github.com/ckuethe/CivitaPy"
 Source = "https://github.com/ckuethe/CivitaPy"
 Issues = "https://github.com/ckuethe/CivitaPy/issues"
+
+[project.scripts]
+civitapy-dl = "civitapy.cli:main"
 
 [project.optional-dependencies]
 dev = [

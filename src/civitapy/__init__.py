@@ -1,3 +1,5 @@
+import importlib.metadata as _metadata
+
 from civitapy.client import AsyncPaginator, CivitAIClient
 from civitapy.enums import (
     ArticleSortOrder,
@@ -64,10 +66,14 @@ from civitapy.models import (
     VersionStats,
 )
 
+__version__ = _metadata.version("civitapy")
+
 __all__ = [  # noqa: RUF022
     # Client
     "CivitAIClient",
     "AsyncPaginator",
+    # Package metadata
+    "__version__",
     # Enums
     "ModelType",
     "ModelFileType",

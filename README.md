@@ -100,6 +100,32 @@ client = CivitAIClient(
 With a filter set, `download_model` / `download_model_version` only fetch files
 whose version's base model matches one of the listed entries.
 
+### CLI tool
+
+A `civitapy-dl` console script is installed alongside the package for
+downloading model assets from the shell. Inputs can be bare model IDs,
+`model:ID` / `version:ID` prefixes, or Civitai model/version URLs:
+
+```bash
+# Download model 827184 (all versions) into the current directory
+civitapy-dl 827184
+
+# Download one specific version, into a ComfyUI models directory layout
+civitapy-dl version:1331249 -c ~/ComfyUI/models
+
+# Just list the files that would be downloaded and their target paths
+civitapy-dl https://civitai.com/models/827184 -n
+```
+
+Without `-c`, files land under
+`<outdir>/<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/`. With
+`-c DIR`, files are placed in a ComfyUI-friendly layout
+`<DIR>/<modeltype>/<modelid>_<modelname>/<file>`, suitable for pointing ComfyUI
+at. `-q` suppresses per-file progress bars, `-n` performs a dry run (printing
+each source URL and its destination path without downloading), `-b` restricts
+downloads to matching base models (repeatable), and `--verify-hash` opts into
+strict SHA256 verification.
+
 ### Gated / early-access files
 
 Per the Civitai API docs, file downloads require a bearer token (401 without
