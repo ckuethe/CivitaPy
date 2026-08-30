@@ -21,6 +21,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from civitapy import __version__
 from civitapy.client import CivitAIClient
@@ -137,6 +138,17 @@ async def build_plan(
     return items
 
 
+def _join_destdir(destdir: str, *parts: str) -> str:
+    """Join a destination prefix with path parts, preserving separator style.
+
+    Literal prefixes like ``/tmp`` keep forward slashes on every platform;
+    native Windows paths join natively so files land where the OS expects.
+    """
+    if "\\" in destdir:
+        return os.path.join(destdir, *parts)
+    return str(PurePosixPath(destdir, *parts))
+
+
 def destination_dir(
     client: CivitAIClient,
     model: Model,
@@ -155,7 +167,7 @@ def destination_dir(
     if not flat:
         return client._version_download_dir(model, version.base_model, destdir=destdir)
     slug = f"{model.id}_{client._sanitize_component(model.name)}"
-    return os.path.join(destdir, _comfyui_subdir(model.type), slug)
+    return _join_destdir(destdir, _comfyui_subdir(model.type), slug)
 
 
 # Mapping from Civitai model types to the exact ComfyUI ``models`` subdirectories.

@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from typing import Any, TypeVar
 
 import httpx
+from pathlib import PurePosixPath
 from pydantic import BaseModel
 
 from civitapy.errors import (
@@ -159,6 +160,19 @@ def _parse_enum_list(value: str | list[str] | None) -> str | None:
 def _clean_params(params: dict[str, Any]) -> dict[str, Any]:
     """Remove None values from params dict."""
     return {k: v for k, v in params.items() if v is not None}
+
+
+def _join_destdir(destdir: str, *parts: str) -> str:
+    """Join a destination prefix with path parts, preserving separator style.
+
+    When ``destdir`` is a native filesystem path (contains backslashes, e.g. a
+    Windows root), join natively so the result matches ``os.path``/``pathlib``
+    behaviour. Otherwise build a POSIX-style path so literal overrides like
+    ``"/tmp"`` keep forward slashes on every platform.
+    """
+    if "\\" in destdir:
+        return _os_mod.path.join(destdir, *parts)
+    return str(PurePosixPath(destdir, *parts))
 
 
 class AsyncPaginator:
@@ -1526,12 +1540,12 @@ class CivitAIClient:
         slug = "_".join(parts)
         model_type = self._sanitize_component(model.type) or "unknown"
         root = destdir if destdir is not None else self._download_dir
-        return _os_mod.path.join(root, model_type, slug)
+        return _join_destdir(root, model_type, slug)
 
     def _version_download_dir(self, model: Model, base_model: str, *, destdir: str | None = None) -> str:
         """Directory for a single version's files: ``.../<basemodel>``."""
         base = self._sanitize_component(base_model) or "unknown"
-        return _os_mod.path.join(self._model_download_dir(model, destdir=destdir), base)
+        return _join_destdir(self._model_download_dir(model, destdir=destdir), base)
 
     @staticmethod
     def _normalize_base_model(value: str) -> str:
