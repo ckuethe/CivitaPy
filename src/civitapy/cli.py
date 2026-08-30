@@ -3,8 +3,11 @@
 The ``civitapy-dl`` console script downloads one or more models (or single model
 versions) into a directory. By default files land under
 ``<outdir>/<modeltype>/<modelid>_<modelname>_<creatorname>/<basemodel>/`` (the
-same layout the :class:`CivitAIClient` uses); with ``--comfyui-models`` they are
-placed in a ComfyUI-friendly layout ``<dir>/<modeltype>/<modelid>_<modelname>/``.
+same layout the :class:`CivitAIClient` uses). With ``--comfyui-models`` they are
+placed in a ComfyUI-friendly layout ``<dir>/<comfy_folder>/<modelid>_<modelname>/``
+where ``<comfy_folder>`` is the exact ComfyUI subdirectory for the model type
+(e.g. ``loras``, ``checkpoints``, ``diffusion_models``); pass ``$COMFYUI_PATH/models``
+as the directory.
 
 Inputs may be plain numeric model IDs, ``model:ID`` / ``version:ID`` prefixed
 IDs, or Civitai model/version URLs.
@@ -144,14 +147,42 @@ def destination_dir(
 ) -> str:
     """Compute the destination directory for a version's files.
 
-    ``flat`` produces ``<destdir>/<type>/<id>_<name>`` (ComfyUI layout); the
+    ``flat`` produces ``<destdir>/<comfy_folder>/<id>_<name>`` where
+    ``comfy_folder`` is the exact, case-sensitive ComfyUI subdirectory for the
+    model's type (e.g. ``loras``, ``checkpoints``, ``diffusion_models``). The
     default delegates to the client's canonical version directory.
     """
     if not flat:
         return client._version_download_dir(model, version.base_model, destdir=destdir)
-    model_type = client._sanitize_component(model.type) or "unknown"
     slug = f"{model.id}_{client._sanitize_component(model.name)}"
-    return os.path.join(destdir, model_type, slug)
+    return os.path.join(destdir, _comfyui_subdir(model.type), slug)
+
+
+# Mapping from Civitai model types to the exact ComfyUI ``models`` subdirectories.
+# Keys are normalized (lowercase, no punctuation); values are case-sensitive and
+# must match ComfyUI's folder names.
+_COMFYUI_SUBDIR_BY_TYPE = {
+    "diffusion": "diffusion_models",
+    "unet": "unet",
+    "vae": "vae",
+    "textencoder": "text_encoders",
+    "clip": "clip",
+    "checkpoint": "checkpoints",
+    "lora": "loras",
+    "controlnet": "controlnet",
+    "upscale": "upscale_models",
+    "textinversion": "embeddings",
+    "negativeembedding": "embeddings",
+}
+
+
+def _comfyui_subdir(model_type: str) -> str:
+    """Return the exact ComfyUI subdirectory for a Civitai model type.
+
+    Falls back to the sanitized Civitai type when the type is unmapped.
+    """
+    key = re.sub(r"[^a-z0-9]", "", str(model_type).lower())
+    return _COMFYUI_SUBDIR_BY_TYPE.get(key, re.sub(r"[^a-zA-Z0-9._-]", "_", str(model_type)).strip("._-"))
 
 
 async def _download(item: PlanItem, client: CivitAIClient, *, progress: bool) -> str | None:
@@ -196,7 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-c",
         "--comfyui-models",
         metavar="DIR",
-        help="Write files into a ComfyUI models directory layout (<DIR>/<type>/<id>_<name>/).",
+        help="Write files into a ComfyUI models directory layout (<DIR>/<comfy_folder>/<id>_<name>/); pass $COMFYUI_PATH/models as <DIR>.",
     )
     parser.add_argument(
         "-q",

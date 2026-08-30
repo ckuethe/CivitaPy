@@ -99,10 +99,46 @@ def test_destination_dir_flat(client, tmp_path):
     version = ModelVersion(**{**_version_json(), "files": []})
 
     dest = destination_dir(client, model, version, destdir=str(tmp_path), flat=True)
-    assert dest == str(tmp_path / "Checkpoint" / "42_my_model")
+    assert dest == str(tmp_path / "checkpoints" / "42_my_model")
 
     dest = destination_dir(client, model, version, destdir=str(tmp_path), flat=False)
     assert dest == str(tmp_path / "Checkpoint" / "42_my_model_some_creator" / "SDXL_1.0")
+
+
+@pytest.mark.parametrize(
+    "type_,folder",
+    [
+        ("Checkpoint", "checkpoints"),
+        ("LORA", "loras"),
+        ("VAE", "vae"),
+        ("CLIP", "clip"),
+        ("UNet", "unet"),
+        ("Diffusion", "diffusion_models"),
+        ("Text Encoder", "text_encoders"),
+        ("ControlNet", "controlnet"),
+        ("Upscale", "upscale_models"),
+        ("Text Inversion", "embeddings"),
+        ("Negative Embedding", "embeddings"),
+    ],
+)
+def test_destination_dir_flat_maps_comfyui_folders(client, tmp_path, type_, folder):
+    from civitapy.models import Model, ModelVersion
+
+    model = Model(**{**_model_json(type=type_), "modelVersions": []})
+    version = ModelVersion(**{**_version_json(), "files": []})
+
+    dest = destination_dir(client, model, version, destdir=str(tmp_path), flat=True)
+    assert dest == str(tmp_path / folder / "42_my_model")
+
+
+def test_destination_dir_flat_unmapped_type_falls_back(client, tmp_path):
+    from civitapy.models import Model, ModelVersion
+
+    model = Model(**{**_model_json(type="Some Odd Type"), "modelVersions": []})
+    version = ModelVersion(**{**_version_json(), "files": []})
+
+    dest = destination_dir(client, model, version, destdir=str(tmp_path), flat=True)
+    assert dest == str(tmp_path / "Some_Odd_Type" / "42_my_model")
 
 
 def test_build_plan_model_input(client, tmp_path):
@@ -112,7 +148,7 @@ def test_build_plan_model_input(client, tmp_path):
 
     assert len(items) == 1
     assert items[0].file.name == "m.bin"
-    assert items[0].dest_path == str(tmp_path / "Checkpoint" / "42_my_model" / "m.bin")
+    assert items[0].dest_path == str(tmp_path / "checkpoints" / "42_my_model" / "m.bin")
 
 
 def test_build_plan_version_input(client, tmp_path):
@@ -122,7 +158,7 @@ def test_build_plan_version_input(client, tmp_path):
         items = run(build_plan(client, ["version:99"], destdir=str(tmp_path), flat=True))
 
     assert len(items) == 1
-    assert items[0].dest_path == str(tmp_path / "Checkpoint" / "42_my_model" / "m.bin")
+    assert items[0].dest_path == str(tmp_path / "checkpoints" / "42_my_model" / "m.bin")
 
 
 def test_build_plan_accepts_parsed_tuples(client, tmp_path):
@@ -133,7 +169,7 @@ def test_build_plan_accepts_parsed_tuples(client, tmp_path):
         items = run(build_plan(client, [("version", 99)], destdir=str(tmp_path), flat=True))
 
     assert len(items) == 1
-    assert items[0].dest_path == str(tmp_path / "Checkpoint" / "42_my_model" / "m.bin")
+    assert items[0].dest_path == str(tmp_path / "checkpoints" / "42_my_model" / "m.bin")
 
 
 def test_build_plan_respects_base_model_filter(tmp_path):
