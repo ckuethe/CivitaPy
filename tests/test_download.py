@@ -260,13 +260,13 @@ def test_download_version_downloads_all_related_files_next_to_each_other(client,
         paths = run(client.download_model_version_async(99))
 
     assert len(paths) == 2
-    dest = str(tmp_path / "LORA" / "42_my_model_some_creator" / "SDXL_1.0")
-    assert paths[0] == dest + "/model.safetensors"
-    assert paths[1] == dest + "/workflow.json"
+    version_dir = tmp_path / "LORA" / "42_my_model_some_creator" / "SDXL_1.0"
+    assert paths[0] == str(version_dir / "model.safetensors")
+    assert paths[1] == str(version_dir / "workflow.json")
     # Both files land side by side in the version directory.
-    assert (tmp_path / "LORA" / "42_my_model_some_creator" / "SDXL_1.0").is_dir()
-    assert (tmp_path / "LORA" / "42_my_model_some_creator" / "SDXL_1.0" / "model.safetensors").read_bytes() == safetensors
-    assert (tmp_path / "LORA" / "42_my_model_some_creator" / "SDXL_1.0" / "workflow.json").read_bytes() == workflow
+    assert version_dir.is_dir()
+    assert (version_dir / "model.safetensors").read_bytes() == safetensors
+    assert (version_dir / "workflow.json").read_bytes() == workflow
 
 
 def _filtered_client(tmp_path):
