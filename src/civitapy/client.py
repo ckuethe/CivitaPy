@@ -8,10 +8,10 @@ import os as _os_mod
 import re
 import time
 from collections.abc import AsyncIterator
+from pathlib import PurePosixPath
 from typing import Any, TypeVar
 
 import httpx
-from pathlib import PurePosixPath
 from pydantic import BaseModel
 
 from civitapy.errors import (
@@ -41,6 +41,11 @@ _BASE_URL = "https://civitai.com/api/v1"
 # Runs of characters that are unsafe for a path component are replaced with a
 # single underscore (see CivitAIClient._sanitize_component).
 _INVALID_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+# Sentinel for ``base_model`` that forces every base-model version to download,
+# bypassing the client's global base-model allow-list (see the ``download_*``
+# methods and :meth:`CivitAIClient._version_allowed`).
+_ALL_BASE_MODELS = "*"
 
 
 class _LoopGuard:
@@ -1412,7 +1417,9 @@ class CivitAIClient:
             version_id: The model version ID to download.
             filename: Optional custom filename for the primary file.
             base_model: If given and it doesn't match the version's base model,
-                nothing is downloaded and an empty list is returned.
+                nothing is downloaded and an empty list is returned. Pass ``"*"``
+                to force the download even when the version's base model is
+                excluded by the client's global ``base_models`` allow-list.
             progress: Show a tqdm progress bar per file when ``True``.
             verify_hash: When ``True``, fail the download (raise
                 :class:`CivitAIDownloadError`) if a file's SHA256 doesn't match the
@@ -1433,9 +1440,7 @@ class CivitAIClient:
         """
         data = await self.model_versions_get_async(version_id)
         version = ModelVersion(**data)
-        if base_model is not None and version.base_model != base_model:
-            return []
-        if base_model is None and not self._should_download_base_model(version.base_model):
+        if not self._version_allowed(version.base_model, base_model):
             return []
 
         # The version endpoint omits the parent's creator, so fetch the model to
@@ -1479,7 +1484,9 @@ class CivitAIClient:
         Args:
             model_id: The model ID to download.
             base_model: Optional base model to restrict downloads to
-                (e.g. ``SDXL 1.0``).
+                (e.g. ``SDXL 1.0``). Pass ``"*"`` to download every version's
+                files regardless of the client's global ``base_models``
+                allow-list.
             progress: Show a tqdm progress bar per file when ``True``.
             verify_hash: When ``True``, fail the download (raise
                 :class:`CivitAIDownloadError`) if a file's SHA256 doesn't match the
@@ -1501,9 +1508,7 @@ class CivitAIClient:
         model = Model(**data)
         downloaded: list[str] = []
         for version in model.model_versions:
-            if base_model is not None and version.base_model != base_model:
-                continue
-            if base_model is None and not self._should_download_base_model(version.base_model):
+            if not self._version_allowed(version.base_model, base_model):
                 continue
             dest = self._version_download_dir(model, version.base_model, destdir=destdir)
             for file in version.files:
@@ -1564,6 +1569,19 @@ class CivitAIClient:
         if not self._base_model_filters:
             return True
         return any(self._base_model_matches(base_model, wanted) for wanted in self._base_model_filters)
+
+    def _version_allowed(self, version_base_model: str, base_model: str | None) -> bool:
+        """Decide whether a version's base model passes the download filter.
+
+        ``base_model="*"`` always downloads (bypasses the client's global
+        allow-list); a concrete ``base_model`` matches exactly; ``None`` defers
+        to the global allow-list filter.
+        """
+        if base_model == _ALL_BASE_MODELS:
+            return True
+        if base_model is not None:
+            return version_base_model == base_model
+        return self._should_download_base_model(version_base_model)
 
     async def _download_file_async(
         self,

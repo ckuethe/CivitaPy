@@ -4,7 +4,7 @@ import hashlib
 import pytest
 from conftest import FakeResponse, mock_async_client
 
-from civitapy import Model, ModelVersion, ModelVersionFile
+from civitapy import CivitAIClient, Model, ModelVersion, ModelVersionFile
 from civitapy.errors import (
     CivitAIAuthError,
     CivitAIDownloadError,
@@ -213,3 +213,131 @@ def test_download_model_async_destdir(client, tmp_path):
     assert paths[0] == "/tmp/Checkpoint/42_my_model_some_creator/SDXL_1.0/m.bin"
     with open(paths[0], "rb") as f:
         assert f.read() == data
+
+
+def test_download_version_downloads_all_related_files_next_to_each_other(client, tmp_path):
+    """A version with several files (e.g. a .safetensors plus a workflow .json)
+    downloads every file into the same directory, next to the primary file."""
+    version_data = {
+        "id": 99,
+        "modelId": 42,
+        "name": "v1",
+        "baseModel": "SDXL 1.0",
+        "createdAt": "2024-01-01T00:00:00Z",
+        "updatedAt": "2024-01-01T00:00:00Z",
+        "files": [
+            {
+                "id": 1,
+                "name": "model.safetensors",
+                "type": "Model",
+                "sizeKB": 1.0,
+                "primary": True,
+                "downloadUrl": "https://example.com/dl?type=Model",
+            },
+            {
+                "id": 2,
+                "name": "workflow.json",
+                "type": "Config",
+                "sizeKB": 1.0,
+                "downloadUrl": "https://example.com/dl?type=Config",
+            },
+        ],
+    }
+    model_data = {
+        "id": 42,
+        "name": "my model",
+        "type": "LORA",
+        "creator": {"id": 7, "username": "some creator"},
+        "modelVersions": [],
+    }
+    safetensors = b"s" * 1024
+    workflow = b"w" * 1024
+    version_resp = FakeResponse(json_data=version_data, content=b"{}")
+    model_resp = FakeResponse(json_data=model_data, content=b"{}")
+    file_resp = FakeResponse(200, content=safetensors)
+    config_resp = FakeResponse(200, content=workflow)
+    with mock_async_client([version_resp, model_resp, file_resp, config_resp]):
+        paths = run(client.download_model_version_async(99))
+
+    assert len(paths) == 2
+    dest = str(tmp_path / "LORA" / "42_my_model_some_creator" / "SDXL_1.0")
+    assert paths[0] == dest + "/model.safetensors"
+    assert paths[1] == dest + "/workflow.json"
+    # Both files land side by side in the version directory.
+    assert (tmp_path / "LORA" / "42_my_model_some_creator" / "SDXL_1.0").is_dir()
+    assert (tmp_path / "LORA" / "42_my_model_some_creator" / "SDXL_1.0" / "model.safetensors").read_bytes() == safetensors
+    assert (tmp_path / "LORA" / "42_my_model_some_creator" / "SDXL_1.0" / "workflow.json").read_bytes() == workflow
+
+
+def _filtered_client(tmp_path):
+    return CivitAIClient(
+        base_url="https://example.com",
+        download_dir=str(tmp_path),
+        retry_count=3,
+        min_request_interval=0.0,
+        base_models=["SDXL 1.0"],
+    )
+
+
+def test_download_model_async_star_bypasses_base_model_filter(tmp_path):
+    """base_model='*' downloads every version even when its base model is
+    excluded by the client's global allow-list (e.g. small workflow files)."""
+    client = _filtered_client(tmp_path)
+    model = _make_model(tmp_path, base_model="LTXV 2.3", name="workflow pack")
+    data = b"d" * 1024
+    model_resp = FakeResponse(json_data=model.model_dump(mode="json", by_alias=True), content=b"{}")
+    file_resp = FakeResponse(200, content=data)
+    with mock_async_client([model_resp, file_resp]):
+        paths = run(client.download_model_async(42, base_model="*"))
+
+    assert len(paths) == 1
+    assert paths[0] == str(tmp_path / "Checkpoint" / "42_workflow_pack_some_creator" / "LTXV_2.3" / "m.bin")
+
+
+def test_download_model_async_star_respects_concrete_override(tmp_path):
+    """A concrete base_model still filters even with the '*' sentinel available."""
+    client = _filtered_client(tmp_path)
+    model = _make_model(tmp_path, base_model="LTXV 2.3", name="workflow pack")
+    model_resp = FakeResponse(json_data=model.model_dump(mode="json", by_alias=True), content=b"{}")
+    with mock_async_client([model_resp]):
+        paths = run(client.download_model_async(42, base_model="SDXL 1.0"))
+
+    assert paths == []
+
+
+def test_download_version_async_star_bypasses_base_model_filter(tmp_path):
+    """base_model='*' lets a single version download despite the allow-list."""
+    client = _filtered_client(tmp_path)
+    version_data = {
+        "id": 99,
+        "modelId": 42,
+        "name": "v1",
+        "baseModel": "LTXV 2.3",
+        "createdAt": "2024-01-01T00:00:00Z",
+        "updatedAt": "2024-01-01T00:00:00Z",
+        "files": [
+            {
+                "id": 1,
+                "name": "workflow.json",
+                "type": "Config",
+                "sizeKB": 1.0,
+                "downloadUrl": "https://example.com/dl?type=Config",
+            }
+        ],
+    }
+    model_data = {
+        "id": 42,
+        "name": "workflow pack",
+        "type": "ComfyWorkflows",
+        "creator": {"id": 7, "username": "some creator"},
+        "modelVersions": [],
+    }
+    data = b"w" * 1024
+    version_resp = FakeResponse(json_data=version_data, content=b"{}")
+    model_resp = FakeResponse(json_data=model_data, content=b"{}")
+    file_resp = FakeResponse(200, content=data)
+    with mock_async_client([version_resp, model_resp, file_resp]):
+        paths = run(client.download_model_version_async(99, base_model="*"))
+
+    assert len(paths) == 1
+    assert paths[0] == str(tmp_path / "ComfyWorkflows" / "42_workflow_pack_some_creator" / "LTXV_2.3" / "workflow.json")
